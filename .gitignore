@@ -5,4 +5,5 @@ build/
 .env.*
 .DS_Store
 Thumbs.db
-
+dev-server.log
+.vite/
