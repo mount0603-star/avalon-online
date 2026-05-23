@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
+  Bot,
   Check,
   Circle,
   Copy,
@@ -12,13 +13,17 @@ import {
   Sparkles,
   Swords,
   Target,
+  Trash2,
   Users,
   Vote,
+  Waves,
   WifiOff,
   X
 } from "lucide-react";
 import { socket } from "./socket";
 import type { PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
+import roleCardsUrl from "./assets/role-cards.png";
+import councilHallUrl from "./assets/council-hall.png";
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
@@ -37,6 +42,7 @@ const phaseLabel: Record<RoomView["game"]["phase"], string> = {
   "team-building": "組隊",
   "team-vote": "表決",
   mission: "任務",
+  lady: "湖中女神",
   assassination: "刺殺",
   finished: "結算"
 };
@@ -152,7 +158,10 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main
+      className="app-shell"
+      style={{ "--card-sheet": `url(${roleCardsUrl})`, "--hall-bg": `url(${councilHallUrl})` } as CSSProperties}
+    >
       <section className="hero-band">
         <div>
           <p className="eyebrow">Hidden role table</p>
@@ -264,6 +273,12 @@ function GameRoom({ room, error }: { room: RoomView; error: string }) {
         <aside className="side-panel">
           {room.game.phase === "lobby" ? <RolePreview playerCount={room.players.length} /> : <VoteHistory room={room} />}
           {isHost && room.game.phase === "lobby" ? (
+            <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
+              <Bot size={18} />
+              新增電腦
+            </button>
+          ) : null}
+          {isHost && room.game.phase === "lobby" ? (
             <button className="primary-button full-button" disabled={room.players.length < MIN_PLAYERS} onClick={() => socket.emit("startGame")}>
               <Swords size={18} />
               開始遊戲
@@ -283,6 +298,7 @@ function GameRoom({ room, error }: { room: RoomView; error: string }) {
 
 function PlayerList({ room }: { room: RoomView }) {
   const leaderId = room.game.leaderId;
+  const canRemoveBots = room.you?.isHost && room.game.phase === "lobby";
   return (
     <div className="panel-block">
       <div className="panel-title">
@@ -295,8 +311,14 @@ function PlayerList({ room }: { room: RoomView }) {
             <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
             <span className="player-name">{player.name}</span>
             {player.isHost ? <Crown className="small-mark" size={15} /> : null}
+            {player.isBot ? <span className="tag bot-tag">電腦</span> : null}
             {leaderId === player.id ? <span className="tag">隊長</span> : null}
             {room.you?.id === player.id ? <span className="tag muted">你</span> : null}
+            {canRemoveBots && player.isBot ? (
+              <button className="mini-icon-button" aria-label={`移除 ${player.name}`} onClick={() => socket.emit("removeBot", player.id)}>
+                <Trash2 size={14} />
+              </button>
+            ) : null}
           </div>
         ))}
       </div>
@@ -328,6 +350,12 @@ function QuestBoard({ room }: { room: RoomView }) {
         <span>否決</span>
         <strong>{room.game.failedVoteCount}/5</strong>
       </div>
+      {room.game.ladyEnabled ? (
+        <div className="counter-line lady-line">
+          <span>湖中女神</span>
+          <strong>{playerName(room, room.game.ladyHolderId)}</strong>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -353,7 +381,7 @@ function RoleCard({ room }: { room: RoomView }) {
   const side = role.allegiance === "good" ? "亞瑟陣營" : "邪惡陣營";
   return (
     <div className={`identity-panel ${role.allegiance === "good" ? "identity-good" : "identity-evil"}`}>
-      <div className={`role-portrait portrait-${room.yourRole}`}>
+      <div className={`role-portrait card-art card-art-${room.yourRole}`}>
         <span>{roleMark[room.yourRole]}</span>
       </div>
       <div>
@@ -367,6 +395,15 @@ function RoleCard({ room }: { room: RoomView }) {
             <span>{knowledge.playerIds.length > 0 ? knowledge.playerIds.map((id) => playerName(room, id)).join("、") : "無"}</span>
           </div>
         ))}
+        {room.ladyResult ? (
+          <div className="knowledge-line lady-result">
+            <Waves size={16} />
+            <strong>湖中女神結果</strong>
+            <span>
+              {playerName(room, room.ladyResult.targetId)} 是{room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -385,10 +422,46 @@ function PhasePanel({ room }: { room: RoomView }) {
   if (room.game.phase === "mission") {
     return <MissionVote room={room} />;
   }
+  if (room.game.phase === "lady") {
+    return <LadyOfLake room={room} />;
+  }
   if (room.game.phase === "assassination") {
     return <Assassination room={room} />;
   }
   return <Finished room={room} />;
+}
+
+function LadyOfLake({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const isHolder = room.game.ladyHolderId === youId;
+  const candidates = room.players.filter((player) => player.id !== youId && !room.game.ladyUsedPlayerIds.includes(player.id));
+
+  return (
+    <div className="action-panel lake-panel">
+      <h2>湖中女神</h2>
+      <p>
+        持有者是 <strong>{playerName(room, room.game.ladyHolderId)}</strong>。查看一名尚未持有過女神的玩家，只會知道他的陣營。
+      </p>
+      {room.ladyResult ? (
+        <p className="lake-result-text">
+          你查看了 <strong>{playerName(room, room.ladyResult.targetId)}</strong>：
+          {room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
+        </p>
+      ) : null}
+      {isHolder ? (
+        <div className="select-grid">
+          {candidates.map((player) => (
+            <button className="select-player" key={player.id} onClick={() => socket.emit("useLadyOfLake", player.id)}>
+              <Waves size={18} />
+              {player.name}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="waiting-line">等待持有者使用湖中女神。</p>
+      )}
+    </div>
+  );
 }
 
 function LobbyPanel({ room }: { room: RoomView }) {
@@ -583,7 +656,7 @@ function RolePreview({ playerCount }: { playerCount: number }) {
           const role = ROLE_DEFINITIONS[roleId as RoleId];
           return (
             <div className={`role-chip ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={role.id}>
-              <span className={`role-mini mini-${role.id}`}>{roleMark[role.id]}</span>
+              <span className={`role-mini card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
               <span>{role.shortName}</span>
               {count > 1 ? <strong>x{count}</strong> : null}
             </div>

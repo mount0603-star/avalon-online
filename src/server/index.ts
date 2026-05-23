@@ -4,6 +4,7 @@ import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import {
+  addBot,
   assassinate,
   attachSocket,
   buildRoomView,
@@ -13,9 +14,12 @@ import {
   detachSocket,
   joinRoom,
   proposeTeam,
+  removeBot,
   resetRoom,
   rooms,
-  startGame
+  runBotActions,
+  startGame,
+  useLadyOfLake
 } from "./game";
 import type {
   ClientToServerEvents,
@@ -79,9 +83,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("startGame", () => runAction(socket, (room, playerId) => startGame(room, playerId)));
+  socket.on("addBot", () => runAction(socket, (room, playerId) => addBot(room, playerId)));
+  socket.on("removeBot", (botId) => runAction(socket, (room, playerId) => removeBot(room, playerId, botId)));
   socket.on("proposeTeam", (teamIds) => runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds)));
   socket.on("castTeamVote", (approve) => runAction(socket, (room, playerId) => castTeamVote(room, playerId, approve)));
   socket.on("castMissionVote", (success) => runAction(socket, (room, playerId) => castMissionVote(room, playerId, success)));
+  socket.on("useLadyOfLake", (targetId) => runAction(socket, (room, playerId) => useLadyOfLake(room, playerId, targetId)));
   socket.on("assassinate", (targetId) => runAction(socket, (room, playerId) => assassinate(room, playerId, targetId)));
   socket.on("resetRoom", () => runAction(socket, (room, playerId) => resetRoom(room, playerId)));
 
@@ -106,6 +113,7 @@ function runAction(
 
   try {
     action(room, playerId);
+    runBotActions(room);
     emitRoom(room.code);
   } catch (error) {
     socket.emit("roomError", getErrorMessage(error));

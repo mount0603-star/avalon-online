@@ -5,6 +5,7 @@ export type PlayerPublic = {
   name: string;
   connected: boolean;
   isHost: boolean;
+  isBot: boolean;
 };
 
 export type GamePhase =
@@ -12,6 +13,7 @@ export type GamePhase =
   | "team-building"
   | "team-vote"
   | "mission"
+  | "lady"
   | "assassination"
   | "finished";
 
@@ -37,6 +39,16 @@ export type RoleKnowledge = {
   playerIds: string[];
 };
 
+export type LadyInspectionPublic = {
+  fromId: string;
+  targetId: string;
+};
+
+export type LadyResult = {
+  targetId: string;
+  allegiance: Allegiance;
+};
+
 export type GamePublicState = {
   phase: GamePhase;
   playerOrder: string[];
@@ -54,6 +66,10 @@ export type GamePublicState = {
   winReason: string | null;
   assassinId: string | null;
   assassinTargetId: string | null;
+  ladyEnabled: boolean;
+  ladyHolderId: string | null;
+  ladyUsedPlayerIds: string[];
+  ladyInspections: LadyInspectionPublic[];
 };
 
 export type RoomView = {
@@ -63,6 +79,7 @@ export type RoomView = {
   game: GamePublicState;
   yourRole: RoleId | null;
   roleKnowledge: RoleKnowledge[];
+  ladyResult: LadyResult | null;
   revealedRoles: Record<string, RoleId> | null;
   error?: string;
 };
@@ -86,10 +103,13 @@ export type RoomJoinedPayload = {
 export type ClientToServerEvents = {
   createRoom: (payload: CreateRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
   joinRoom: (payload: JoinRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
+  addBot: () => void;
+  removeBot: (playerId: string) => void;
   startGame: () => void;
   proposeTeam: (teamIds: string[]) => void;
   castTeamVote: (approve: boolean) => void;
   castMissionVote: (success: boolean) => void;
+  useLadyOfLake: (targetId: string) => void;
   assassinate: (targetId: string) => void;
   resetRoom: () => void;
 };
@@ -105,4 +125,3 @@ export type SocketData = {
   roomCode?: string;
   playerId?: string;
 };
-

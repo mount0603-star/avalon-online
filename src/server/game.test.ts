@@ -7,7 +7,10 @@ import {
   proposeTeam,
   castTeamVote,
   castMissionVote,
-  buildRoomView
+  buildRoomView,
+  addBot,
+  runBotActions,
+  useLadyOfLake
 } from "./game";
 import { ROLE_DEFINITIONS, getRoleSet, roleSide } from "../shared/roles";
 
@@ -47,3 +50,35 @@ test("role definitions have public display names", () => {
   }
 });
 
+test("bot leaders can propose a legal team", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  for (let index = 0; index < 4; index += 1) {
+    addBot(room, hostId);
+  }
+  startGame(room, hostId);
+  const botLeaderIndex = room.game.playerOrder.findIndex((id) => room.players.get(id)?.isBot);
+  room.game.leaderIndex = botLeaderIndex;
+
+  assert.equal(runBotActions(room), true);
+  assert.equal(room.game.phase, "team-vote");
+  assert.equal(room.game.proposedTeam.length, 2);
+});
+
+test("lady of the lake reveals allegiance only to the holder and passes token", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E", "F", "G"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const targetId = room.game.playerOrder.find((id) => id !== hostId)!;
+  room.game.phase = "lady";
+  room.game.ladyEnabled = true;
+  room.game.ladyHolderId = hostId;
+  room.game.ladyUsedPlayerIds = [hostId];
+
+  useLadyOfLake(room, hostId, targetId);
+
+  assert.equal(room.game.phase, "team-building");
+  assert.equal(room.game.ladyHolderId, targetId);
+  assert.equal(room.game.ladyResults[hostId].targetId, targetId);
+  assert.equal(buildRoomView(room, hostId).ladyResult?.targetId, targetId);
+  assert.equal(buildRoomView(room, targetId).ladyResult, null);
+});

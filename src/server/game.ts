@@ -12,6 +12,7 @@ import {
 import type {
   GamePublicState,
   PlayerPublic,
+  LadyResult,
   QuestResult,
   RoleKnowledge,
   RoomView,
@@ -37,6 +38,11 @@ export type GameInternal = {
   winner: "good" | "evil" | null;
   winReason: string | null;
   assassinTargetId: string | null;
+  ladyEnabled: boolean;
+  ladyHolderId: string | null;
+  ladyUsedPlayerIds: string[];
+  ladyInspections: { fromId: string; targetId: string }[];
+  ladyResults: Record<string, LadyResult>;
 };
 
 export type RoomInternal = {
@@ -47,6 +53,8 @@ export type RoomInternal = {
 };
 
 export const rooms = new Map<string, RoomInternal>();
+
+const BOT_NAMES = ["蓋瑞斯", "崔斯坦", "伊蓮", "貝狄威爾", "蘭馬洛克", "艾克特", "凱", "加荷里斯"];
 
 export function emptyGame(): GameInternal {
   return {
@@ -62,7 +70,12 @@ export function emptyGame(): GameInternal {
     voteHistory: [],
     winner: null,
     winReason: null,
-    assassinTargetId: null
+    assassinTargetId: null,
+    ladyEnabled: false,
+    ladyHolderId: null,
+    ladyUsedPlayerIds: [],
+    ladyInspections: [],
+    ladyResults: {}
   };
 }
 
@@ -88,6 +101,7 @@ export function createRoom(name: string, existingPlayerId?: string): { room: Roo
     name: normalizeName(name),
     connected: true,
     isHost: true,
+    isBot: false,
     socketId: null,
     role: null
   };
@@ -128,11 +142,47 @@ export function joinRoom(roomCode: string, name: string, existingPlayerId?: stri
     name: normalizeName(name),
     connected: true,
     isHost: false,
+    isBot: false,
     socketId: null,
     role: null
   };
   room.players.set(playerId, player);
   return { room, playerId };
+}
+
+export function addBot(room: RoomInternal, hostId: string): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能新增電腦玩家。");
+  }
+  if (room.players.size >= MAX_PLAYERS) {
+    throw new Error("房間已滿。");
+  }
+
+  const usedNames = new Set(Array.from(room.players.values()).map((player) => player.name));
+  const botName = BOT_NAMES.find((name) => !usedNames.has(name)) || `電腦 ${room.players.size + 1}`;
+  const botId = `bot-${randomUUID()}`;
+  room.players.set(botId, {
+    id: botId,
+    name: botName,
+    connected: true,
+    isHost: false,
+    isBot: true,
+    socketId: null,
+    role: null
+  });
+}
+
+export function removeBot(room: RoomInternal, hostId: string, botId: string): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能移除電腦玩家。");
+  }
+  const bot = requirePlayer(room, botId);
+  if (!bot.isBot) {
+    throw new Error("只能移除電腦玩家。");
+  }
+  room.players.delete(botId);
 }
 
 export function attachSocket(room: RoomInternal, playerId: string, socketId: string): void {
@@ -176,7 +226,10 @@ export function startGame(room: RoomInternal, playerId: string): void {
     phase: "team-building",
     playerOrder: order,
     leaderIndex: Math.floor(Math.random() * order.length),
-    questIndex: 0
+    questIndex: 0,
+    ladyEnabled: playerCount >= 7,
+    ladyHolderId: playerCount >= 7 ? order[order.length - 1] : null,
+    ladyUsedPlayerIds: playerCount >= 7 ? [order[order.length - 1]] : []
   };
 }
 
@@ -295,9 +348,34 @@ export function castMissionVote(room: RoomInternal, playerId: string, success: b
     return;
   }
 
-  room.game.questIndex += 1;
-  advanceLeader(room);
-  room.game.proposedTeam = [];
+  moveToNextQuest(room);
+}
+
+export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: string): void {
+  assertPhase(room, "lady");
+  const holder = requirePlayer(room, playerId);
+  const target = requirePlayer(room, targetId);
+
+  if (room.game.ladyHolderId !== holder.id) {
+    throw new Error("現在不是你持有湖中女神。");
+  }
+  if (target.id === holder.id) {
+    throw new Error("湖中女神不能查看自己。");
+  }
+  if (room.game.ladyUsedPlayerIds.includes(target.id)) {
+    throw new Error("這位玩家已經持有過湖中女神。");
+  }
+  if (!target.role) {
+    throw new Error("目標還沒有身分。");
+  }
+
+  room.game.ladyResults[playerId] = {
+    targetId: target.id,
+    allegiance: roleSide(target.role)
+  };
+  room.game.ladyInspections.push({ fromId: holder.id, targetId: target.id });
+  room.game.ladyHolderId = target.id;
+  room.game.ladyUsedPlayerIds.push(target.id);
   room.game.phase = "team-building";
 }
 
@@ -358,12 +436,29 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
       winner: game.winner,
       winReason: game.winReason,
       assassinId: assassin?.id || null,
-      assassinTargetId: game.assassinTargetId
+      assassinTargetId: game.assassinTargetId,
+      ladyEnabled: game.ladyEnabled,
+      ladyHolderId: game.ladyHolderId,
+      ladyUsedPlayerIds: [...game.ladyUsedPlayerIds],
+      ladyInspections: [...game.ladyInspections]
     },
     yourRole: viewer?.role || null,
     roleKnowledge: viewer?.role ? buildKnowledge(room, viewer.id, viewer.role) : [],
+    ladyResult: viewer ? game.ladyResults[viewer.id] || null : null,
     revealedRoles
   };
+}
+
+export function runBotActions(room: RoomInternal): boolean {
+  let changed = false;
+  for (let count = 0; count < 30; count += 1) {
+    const acted = runOneBotAction(room);
+    if (!acted) {
+      return changed;
+    }
+    changed = true;
+  }
+  return changed;
 }
 
 export function activeRoleList(playerCount: number): RoleId[] {
@@ -419,6 +514,152 @@ function finishGame(room: RoomInternal, winner: "good" | "evil", reason: string)
   room.game.winReason = reason;
 }
 
+function moveToNextQuest(room: RoomInternal): void {
+  const completedQuestIndex = room.game.questIndex;
+  room.game.questIndex += 1;
+  advanceLeader(room);
+  room.game.proposedTeam = [];
+
+  if (shouldUseLadyOfLake(room, completedQuestIndex)) {
+    room.game.phase = "lady";
+    return;
+  }
+
+  room.game.phase = "team-building";
+}
+
+function shouldUseLadyOfLake(room: RoomInternal, completedQuestIndex: number): boolean {
+  return (
+    room.game.ladyEnabled &&
+    completedQuestIndex >= 1 &&
+    completedQuestIndex <= 3 &&
+    room.game.ladyUsedPlayerIds.length < room.players.size &&
+    Boolean(room.game.ladyHolderId)
+  );
+}
+
+function runOneBotAction(room: RoomInternal): boolean {
+  if (room.game.phase === "team-building") {
+    const leaderId = currentLeaderId(room);
+    const leader = leaderId ? room.players.get(leaderId) : null;
+    if (leader?.isBot) {
+      proposeTeam(room, leader.id, chooseBotTeam(room, leader));
+      return true;
+    }
+  }
+
+  if (room.game.phase === "team-vote") {
+    const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
+    if (bot) {
+      castTeamVote(room, bot.id, chooseBotTeamVote(room, bot));
+      return true;
+    }
+  }
+
+  if (room.game.phase === "mission") {
+    const bot = room.game.proposedTeam
+      .map((id) => room.players.get(id))
+      .find((player): player is PlayerInternal => Boolean(player && player.isBot && room.game.missionVotes[player.id] === undefined));
+    if (bot) {
+      castMissionVote(room, bot.id, chooseBotMissionVote(room, bot));
+      return true;
+    }
+  }
+
+  if (room.game.phase === "lady") {
+    const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
+    if (holder?.isBot) {
+      useLadyOfLake(room, holder.id, chooseBotLadyTarget(room, holder));
+      return true;
+    }
+  }
+
+  if (room.game.phase === "assassination") {
+    const assassin = Array.from(room.players.values()).find((player) => player.role === "assassin");
+    if (assassin?.isBot) {
+      const merlin = Array.from(room.players.values()).find((player) => player.role === "merlin");
+      if (merlin) {
+        assassinate(room, assassin.id, merlin.id);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
+  const size = currentTeamSize(room);
+  const players = orderedPlayers(room);
+  const team: string[] = [];
+  const add = (player?: PlayerInternal) => {
+    if (player && !team.includes(player.id) && team.length < size) {
+      team.push(player.id);
+    }
+  };
+
+  add(bot);
+
+  if (bot.role && roleSide(bot.role) === "evil") {
+    knownEvilPlayers(room, bot).forEach(add);
+    players.filter((player) => player.role && roleSide(player.role) === "good").forEach(add);
+  } else {
+    players.filter((player) => !knownEvilIds(room, bot).has(player.id)).forEach(add);
+  }
+
+  players.forEach(add);
+  return team.slice(0, size);
+}
+
+function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
+  const team = room.game.proposedTeam.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
+  if (bot.role && roleSide(bot.role) === "evil") {
+    return team.some((player) => player.role && roleSide(player.role) === "evil");
+  }
+  const knownEvil = knownEvilIds(room, bot);
+  return !team.some((player) => knownEvil.has(player.id));
+}
+
+function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean {
+  if (!bot.role || roleSide(bot.role) === "good") {
+    return true;
+  }
+  const currentFailCount = Object.values(room.game.missionVotes).filter((value) => !value).length;
+  return currentFailCount >= currentFailThreshold(room);
+}
+
+function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
+  const used = new Set(room.game.ladyUsedPlayerIds);
+  const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id && !used.has(player.id));
+  const unknownCandidates = candidates.filter((player) => !knownEvilIds(room, bot).has(player.id));
+  const pool = unknownCandidates.length > 0 ? unknownCandidates : candidates;
+  return pool[Math.floor(Math.random() * pool.length)].id;
+}
+
+function knownEvilPlayers(room: RoomInternal, bot: PlayerInternal): PlayerInternal[] {
+  if (!bot.role) {
+    return [];
+  }
+  if (roleSide(bot.role) === "evil") {
+    return orderedPlayers(room).filter(
+      (player) => player.role && roleSide(player.role) === "evil" && player.role !== "oberon" && (bot.role !== "oberon" || player.id === bot.id)
+    );
+  }
+  if (bot.role === "merlin") {
+    return orderedPlayers(room).filter((player) => player.role && roleSide(player.role) === "evil" && player.role !== "mordred");
+  }
+  const ladyResult = room.game.ladyResults[bot.id];
+  if (ladyResult?.allegiance === "evil") {
+    const player = room.players.get(ladyResult.targetId);
+    return player ? [player] : [];
+  }
+  return [];
+}
+
+function knownEvilIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
+  return new Set(knownEvilPlayers(room, bot).map((player) => player.id));
+}
+
 function orderedPlayers(room: RoomInternal): PlayerInternal[] {
   if (room.game.playerOrder.length > 0) {
     return room.game.playerOrder.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
@@ -431,7 +672,8 @@ function toPublicPlayer(player: PlayerInternal): PlayerPublic {
     id: player.id,
     name: player.name,
     connected: player.connected,
-    isHost: player.isHost
+    isHost: player.isHost,
+    isBot: player.isBot
   };
 }
 
@@ -485,4 +727,3 @@ function shuffle<T>(items: T[]): T[] {
 export function roleName(role: RoleId): string {
   return ROLE_DEFINITIONS[role].name;
 }
-
