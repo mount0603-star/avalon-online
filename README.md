@@ -11,6 +11,15 @@ npm run dev
 
 The client runs on `http://localhost:5173` and the realtime server runs on `http://localhost:4000`.
 
+## Deploy On Render
+
+Create a Render Web Service from this GitHub repository.
+
+- Build command: `npm ci && npm run build`
+- Start command: `npm run start`
+- Environment variable: `NODE_ENV=production`
+- Health check path: `/health`
+
 ## Current Features
 
 - Create a room and invite players with a room code
@@ -24,4 +33,3 @@ The client runs on `http://localhost:5173` and the realtime server runs on `http
 - In-memory rooms for quick private games
 
 This project does not include official board-game artwork or rulebook text.
-
