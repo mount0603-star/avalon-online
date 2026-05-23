@@ -23,7 +23,7 @@ import {
   X
 } from "lucide-react";
 import { socket } from "./socket";
-import type { PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
+import type { LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
 import roleCardsUrl from "./assets/role-cards.png";
 import councilHallUrl from "./assets/council-hall.png";
 import {
@@ -94,6 +94,7 @@ export function App() {
   const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || "");
   const [roomCode, setRoomCode] = useState(() => localStorage.getItem(ROOM_CODE_KEY) || "");
   const [error, setError] = useState("");
+  const [lobbyRooms, setLobbyRooms] = useState<LobbyRoomSummary[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [connected, setConnected] = useState(socket.connected);
 
@@ -112,6 +113,7 @@ export function App() {
     const onDisconnect = () => setConnected(false);
 
     socket.on("roomState", onState);
+    socket.on("lobbyRooms", setLobbyRooms);
     socket.on("roomError", onError);
     socket.on("roomClosed", onClosed);
     socket.on("connect", onConnect);
@@ -119,6 +121,7 @@ export function App() {
 
     return () => {
       socket.off("roomState", onState);
+      socket.off("lobbyRooms", setLobbyRooms);
       socket.off("roomError", onError);
       socket.off("roomClosed", onClosed);
       socket.off("connect", onConnect);
@@ -251,8 +254,8 @@ export function App() {
     >
       <section className="hero-band">
         <div>
-          <p className="eyebrow">Hidden role table</p>
-          <h1>Avalon Online</h1>
+          <p className="eyebrow">bevis與他的朋友私人遊戲 不公開</p>
+          <h1>阿瓦隆線上版</h1>
         </div>
         <div className={connected ? "connection online" : "connection offline"}>
           {connected ? <Circle size={14} fill="currentColor" /> : <WifiOff size={16} />}
@@ -270,6 +273,7 @@ export function App() {
           onRoomCodeChange={(value) => setRoomCode(value.toUpperCase())}
           onCreate={createRoom}
           onJoin={joinRoom}
+          lobbyRooms={lobbyRooms}
         />
       ) : (
         <GameRoom room={room} error={error} onLeave={leaveCurrentRoom} />
@@ -287,6 +291,7 @@ type WelcomePanelProps = {
   onRoomCodeChange: (value: string) => void;
   onCreate: () => void;
   onJoin: () => void;
+  lobbyRooms: LobbyRoomSummary[];
 };
 
 function WelcomePanel(props: WelcomePanelProps) {
@@ -318,8 +323,38 @@ function WelcomePanel(props: WelcomePanelProps) {
           </button>
         </div>
       </div>
-      <RolePreview playerCount={5} />
+      <LobbyRoomList rooms={props.lobbyRooms} />
+      <RolePreview />
     </section>
+  );
+}
+
+function LobbyRoomList({ rooms }: { rooms: LobbyRoomSummary[] }) {
+  return (
+    <div className="panel-block public-lobby">
+      <div className="panel-title">
+        <Users size={17} />
+        目前遊戲
+      </div>
+      <p className="public-lobby-note">只顯示狀態，不公開房號。</p>
+      {rooms.length === 0 ? (
+        <p className="muted-line">目前沒有公開中的房間。</p>
+      ) : (
+        <div className="public-room-list">
+          {rooms.slice(0, 8).map((room, index) => (
+            <div className="public-room-row" key={`${room.hostName}-${room.updatedAt}-${index}`}>
+              <div>
+                <strong>{room.hostName} 的遊戲</strong>
+                <span>{phaseLabel[room.phase]}</span>
+              </div>
+              <b>
+                {room.playerCount}/{room.maxPlayers}
+              </b>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -366,7 +401,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
         </section>
 
         <aside className="side-panel">
-          {room.game.phase === "lobby" ? <RolePreview playerCount={room.players.length} /> : null}
+          {room.game.phase === "lobby" ? <RolePreview /> : null}
           <VoteHistory room={room} />
           <LadyHistory room={room} />
           {isHost && room.game.phase === "finished" ? <ResetControl /> : null}
@@ -438,6 +473,18 @@ function HostControls({ room }: { room: RoomView }) {
 
   return (
     <div className="panel-block host-controls">
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={room.ladyEnabledSetting}
+          onChange={(event) => socket.emit("setLadyEnabled", event.currentTarget.checked)}
+        />
+        <span className="toggle-track" />
+        <span className="toggle-label">
+          <Waves size={17} />
+          湖中女神
+        </span>
+      </label>
       <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
         <Bot size={18} />
         新增電腦
@@ -461,33 +508,42 @@ function ResetControl() {
 
 function MissionBoard({ room }: { room: RoomView }) {
   const playerCount = Math.max(room.players.length, MIN_PLAYERS);
+  const successCount = room.game.quests.filter((quest) => quest.success).length;
+  const failureCount = room.game.quests.filter((quest) => !quest.success).length;
+  const ladyIsActiveOrPlanned = room.game.phase === "lobby" ? room.ladyEnabledSetting : room.game.ladyEnabled;
   return (
     <div className="mission-board">
-      <div className="panel-title">
-        <Flag size={17} />
-        任務盤
+      <div className="board-top">
+        <div className="panel-title">
+          <Flag size={17} />
+          任務盤
+        </div>
+        <div className="score-runes" aria-label="任務勝敗">
+          <span className="score-good">{successCount}</span>
+          <small>:</small>
+          <span className="score-evil">{failureCount}</span>
+        </div>
       </div>
-      <div className="quest-orbit">
+      <div className="quest-path">
         {[0, 1, 2, 3, 4].map((index) => {
           const quest = room.game.quests.find((item) => item.index === index);
           const isCurrent = room.game.questIndex === index && room.game.phase !== "lobby" && room.game.phase !== "finished";
           return (
-            <div
-              className={`quest-medallion ${quest?.success ? "quest-success" : ""} ${quest && !quest.success ? "quest-fail" : ""} ${isCurrent ? "quest-current" : ""}`}
-              key={index}
-            >
-              <small>任務 {index + 1}</small>
-              <strong>{questTeamSizes[playerCount]?.[index] || "-"}</strong>
-              {quest ? (
-                <span>{quest.success ? "成功" : `${quest.failCount} 失敗`}</span>
-              ) : (
-                <span>{questFailText(playerCount, index)}</span>
-              )}
+            <div className="quest-step" key={index}>
+              <div
+                className={`quest-medallion ${quest?.success ? "quest-success" : ""} ${quest && !quest.success ? "quest-fail" : ""} ${isCurrent ? "quest-current" : ""}`}
+              >
+                <small>任務 {index + 1}</small>
+                <strong>{questTeamSizes[playerCount]?.[index] || "-"}</strong>
+                <span>{quest ? (quest.success ? "成功" : `${quest.failCount} 失敗`) : questFailText(playerCount, index)}</span>
+              </div>
+              <div className="quest-caption">{quest ? quest.team.map((id) => playerName(room, id)).join("、") : `${questTeamSizes[playerCount]?.[index] || "-"} 人`}</div>
             </div>
           );
         })}
       </div>
       <div className="reject-track" aria-label="否決次數">
+        <span className="reject-label">否決軌</span>
         {[1, 2, 3, 4, 5].map((value) => (
           <span className={value <= room.game.failedVoteCount ? "reject-token active" : "reject-token"} key={value}>
             {value}
@@ -495,8 +551,12 @@ function MissionBoard({ room }: { room: RoomView }) {
         ))}
       </div>
       <div className="board-foot">
-        <span>否決 {room.game.failedVoteCount}/5</span>
-        {room.game.ladyEnabled ? <span>湖中女神：{playerName(room, room.game.ladyHolderId)}</span> : null}
+        <span>連續否決 {room.game.failedVoteCount}/5</span>
+        {ladyIsActiveOrPlanned ? (
+          <span>{room.game.phase === "lobby" ? "湖中女神：開啟" : `湖中女神持有者：${playerName(room, room.game.ladyHolderId)}`}</span>
+        ) : (
+          <span>湖中女神未啟用</span>
+        )}
       </div>
     </div>
   );
@@ -779,28 +839,22 @@ function Finished({ room }: { room: RoomView }) {
   );
 }
 
-function RolePreview({ playerCount }: { playerCount: number }) {
-  const safeCount = playerCount >= MIN_PLAYERS && playerCount <= MAX_PLAYERS ? playerCount : MIN_PLAYERS;
-  const roles = getRoleSet(safeCount);
-  const grouped = roles.reduce<Record<RoleId, number>>((acc, role) => {
-    acc[role] = (acc[role] || 0) + 1;
-    return acc;
-  }, {} as Record<RoleId, number>);
+function RolePreview() {
+  const roles: RoleId[] = ["merlin", "percival", "loyal", "assassin", "morgana", "mordred", "oberon", "minion"];
 
   return (
     <div className="panel-block role-preview">
       <div className="panel-title">
         <Crown size={17} />
-        {safeCount} 人角色
+        角色圖鑑
       </div>
-      <div className="role-chip-grid">
-        {Object.entries(grouped).map(([roleId, count]) => {
-          const role = ROLE_DEFINITIONS[roleId as RoleId];
+      <div className="role-gallery-grid">
+        {roles.map((roleId) => {
+          const role = ROLE_DEFINITIONS[roleId];
           return (
-            <div className={`role-chip ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={role.id}>
-              <span className={`role-mini card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
-              <span>{role.shortName}</span>
-              {count > 1 ? <strong>x{count}</strong> : null}
+            <div className={`role-gallery-card ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={role.id}>
+              <span className={`role-gallery-art card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
+              <strong>{role.shortName}</strong>
             </div>
           );
         })}
@@ -864,10 +918,13 @@ function LadyHistory({ room }: { room: RoomView }) {
           return (
             <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
               <strong>#{index + 1}</strong>
-              <span>
+              <span className="lady-history-main">
                 {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
+                {inspection.announcedAllegiance ? (
+                  <em>宣稱{inspection.announcedAllegiance === "good" ? "好人" : "邪惡"}</em>
+                ) : null}
               </span>
-              {isYourResult ? <b>{room.ladyResult?.allegiance === "good" ? "好人" : "邪惡"}</b> : null}
+              {isYourResult ? <b>真實：{room.ladyResult?.allegiance === "good" ? "好人" : "邪惡"}</b> : null}
             </div>
           );
         })}

@@ -12,6 +12,7 @@ import {
   runBotActions,
   useLadyOfLake,
   leaveRoom,
+  setLadyEnabled,
   isRoomIdleExpired,
   IDLE_TIMEOUT_MS
 } from "./game";
@@ -107,6 +108,69 @@ test("lady of the lake reveals allegiance only to the holder and passes token", 
   assert.equal(room.game.ladyResults[hostId].targetId, targetId);
   assert.equal(buildRoomView(room, hostId).ladyResult?.targetId, targetId);
   assert.equal(buildRoomView(room, targetId).ladyResult, null);
+});
+
+test("host can disable lady of the lake before the game starts", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+
+  assert.equal(room.ladyEnabledSetting, true);
+  setLadyEnabled(room, hostId, false);
+  startGame(room, hostId);
+
+  assert.equal(room.game.ladyEnabled, false);
+  assert.equal(room.game.ladyHolderId, null);
+});
+
+test("bot lady announcements can lie for evil holders", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [holderId, targetId] = room.game.playerOrder;
+  room.players.get(holderId)!.isBot = true;
+  room.players.get(holderId)!.role = "morgana";
+  room.players.get(targetId)!.role = "loyal";
+  room.game.phase = "lady";
+  room.game.ladyEnabled = true;
+  room.game.ladyHolderId = holderId;
+  room.game.ladyUsedPlayerIds = [holderId];
+
+  const random = Math.random;
+  Math.random = () => 0;
+  try {
+    useLadyOfLake(room, holderId, targetId);
+  } finally {
+    Math.random = random;
+  }
+
+  assert.equal(room.game.ladyInspections[0].announcedAllegiance, "evil");
+});
+
+test("percival bot uses lady result to protect the other merlin candidate", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [percivalId, merlinId, morganaId, assassinId, loyalId] = room.game.playerOrder;
+  room.players.get(percivalId)!.isBot = true;
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.players.get(assassinId)!.role = "assassin";
+  room.players.get(loyalId)!.role = "loyal";
+  room.game.leaderIndex = 0;
+  room.game.questIndex = 2;
+  room.game.ladyResults[percivalId] = { targetId: morganaId, allegiance: "evil" };
+
+  const random = Math.random;
+  Math.random = () => 0.5;
+  try {
+    runBotActions(room);
+  } finally {
+    Math.random = random;
+  }
+
+  assert.ok(room.game.proposedTeam.includes(merlinId));
+  assert.equal(room.game.proposedTeam.includes(morganaId), false);
 });
 
 test("leaving during a game lets a bot take over and promotes a human host", () => {

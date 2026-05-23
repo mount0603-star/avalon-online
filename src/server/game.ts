@@ -7,6 +7,7 @@ import {
   ROLE_DEFINITIONS,
   getRoleSet,
   roleSide,
+  type Allegiance,
   type RoleId
 } from "../shared/roles";
 import type {
@@ -41,13 +42,14 @@ export type GameInternal = {
   ladyEnabled: boolean;
   ladyHolderId: string | null;
   ladyUsedPlayerIds: string[];
-  ladyInspections: { fromId: string; targetId: string }[];
+  ladyInspections: { fromId: string; targetId: string; announcedAllegiance: Allegiance | null }[];
   ladyResults: Record<string, LadyResult>;
 };
 
 export type RoomInternal = {
   code: string;
   hostId: string;
+  ladyEnabledSetting: boolean;
   players: Map<string, PlayerInternal>;
   game: GameInternal;
   createdAt: number;
@@ -114,6 +116,7 @@ export function createRoom(name: string, existingPlayerId?: string): { room: Roo
   const room: RoomInternal = {
     code,
     hostId: playerId,
+    ladyEnabledSetting: true,
     players: new Map([[playerId, player]]),
     game: emptyGame(),
     createdAt: now,
@@ -193,6 +196,14 @@ export function removeBot(room: RoomInternal, hostId: string, botId: string): vo
   room.players.delete(botId);
 }
 
+export function setLadyEnabled(room: RoomInternal, hostId: string, enabled: boolean): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能更改湖中女神設定。");
+  }
+  room.ladyEnabledSetting = enabled;
+}
+
 export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteRoom: boolean } {
   const player = requirePlayer(room, playerId);
 
@@ -267,7 +278,7 @@ export function startGame(room: RoomInternal, playerId: string): void {
   });
 
   const leaderIndex = Math.floor(Math.random() * order.length);
-  const ladyHolderId = playerCount >= 7 ? order[(leaderIndex - 1 + order.length) % order.length] : null;
+  const ladyHolderId = room.ladyEnabledSetting ? order[(leaderIndex - 1 + order.length) % order.length] : null;
 
   room.game = {
     ...emptyGame(),
@@ -275,7 +286,7 @@ export function startGame(room: RoomInternal, playerId: string): void {
     playerOrder: order,
     leaderIndex,
     questIndex: 0,
-    ladyEnabled: playerCount >= 7,
+    ladyEnabled: room.ladyEnabledSetting,
     ladyHolderId,
     ladyUsedPlayerIds: ladyHolderId ? [ladyHolderId] : []
   };
@@ -421,7 +432,11 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
     targetId: target.id,
     allegiance: roleSide(target.role)
   };
-  room.game.ladyInspections.push({ fromId: holder.id, targetId: target.id });
+  room.game.ladyInspections.push({
+    fromId: holder.id,
+    targetId: target.id,
+    announcedAllegiance: holder.isBot ? chooseBotLadyAnnouncement(room, holder, target, roleSide(target.role)) : null
+  });
   room.game.ladyHolderId = target.id;
   room.game.ladyUsedPlayerIds.push(target.id);
   room.game.phase = "team-building";
@@ -466,6 +481,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
 
   return {
     roomCode: room.code,
+    ladyEnabledSetting: room.ladyEnabledSetting,
     idleWarningAt: room.lastActivityAt + IDLE_WARNING_MS,
     idleTimeoutAt: room.lastActivityAt + IDLE_TIMEOUT_MS,
     you: viewer ? toPublicPlayer(viewer) : null,
@@ -640,7 +656,6 @@ function runOneBotAction(room: RoomInternal): boolean {
 
 function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
   const size = currentTeamSize(room);
-  const players = orderedPlayers(room);
   const team: string[] = [];
   const add = (player?: PlayerInternal) => {
     if (player && !team.includes(player.id) && team.length < size) {
@@ -648,26 +663,86 @@ function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
     }
   };
 
-  add(bot);
-
-  if (bot.role && roleSide(bot.role) === "evil") {
-    knownEvilPlayers(room, bot).forEach(add);
-    players.filter((player) => player.role && roleSide(player.role) === "good").forEach(add);
-  } else {
-    players.filter((player) => !knownEvilIds(room, bot).has(player.id)).forEach(add);
+  if (chance(bot.role && roleSide(bot.role) === "evil" ? 0.72 : 0.88)) {
+    add(bot);
   }
 
-  players.forEach(add);
+  rankBotTeamCandidates(room, bot).forEach(add);
+  orderedPlayers(room).forEach(add);
   return team.slice(0, size);
 }
 
 function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const team = room.game.proposedTeam.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
-  if (bot.role && roleSide(bot.role) === "evil") {
-    return team.some((player) => player.role && roleSide(player.role) === "evil");
-  }
+  const selfOnTeam = team.some((player) => player.id === bot.id);
+  const suspiciousCount = team.filter((player) => player.id !== bot.id && botSuspicionScore(room, bot, player) >= 1).length;
   const knownEvil = knownEvilIds(room, bot);
-  return !team.some((player) => knownEvil.has(player.id));
+  const knownEvilCount = team.filter((player) => knownEvil.has(player.id)).length;
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+  const trustedGoodOnTeam = team.some((player) => privateGood.has(player.id));
+  const condemnedOnTeam = team.some((player) => privateEvil.has(player.id));
+  const critical = isCriticalMoment(room);
+  const opening = isOpeningRound(room);
+
+  if (room.game.failedVoteCount >= 4 && (!bot.role || roleSide(bot.role) === "good")) {
+    return chance(knownEvilCount > 0 || condemnedOnTeam ? 0.5 : 0.92);
+  }
+
+  if (bot.role && roleSide(bot.role) === "evil") {
+    const evilOnTeam = team.some((player) => knownEvil.has(player.id));
+    if (evilOnTeam) {
+      return chance(selfOnTeam ? 0.92 : critical ? 0.86 : 0.78);
+    }
+    if (room.game.failedVoteCount >= 4) {
+      return chance(0.05);
+    }
+    if (suspiciousCount > 0) {
+      return chance(critical ? 0.42 : 0.58);
+    }
+    return chance(opening ? 0.46 : critical ? 0.12 : 0.32);
+  }
+
+  if (bot.role === "merlin") {
+    if (knownEvilCount > 0 || condemnedOnTeam) {
+      if (opening) {
+        return chance(knownEvilCount + (condemnedOnTeam ? 1 : 0) >= 2 ? 0.28 : 0.52);
+      }
+      return chance(knownEvilCount + (condemnedOnTeam ? 1 : 0) >= 2 ? 0.08 : critical ? 0.16 : 0.34);
+    }
+    if (suspiciousCount > 0) {
+      return chance(selfOnTeam || trustedGoodOnTeam ? (critical ? 0.62 : 0.76) : critical ? 0.34 : 0.58);
+    }
+    return chance(selfOnTeam || trustedGoodOnTeam ? 0.92 : 0.82);
+  }
+
+  if (bot.role === "percival") {
+    const protectedMerlinId = deducedMerlinIdForPercival(room, bot);
+    const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+    const protectedMerlinOnTeam = protectedMerlinId ? team.some((player) => player.id === protectedMerlinId) : false;
+    const exposedMorganaOnTeam = exposedMorganaId ? team.some((player) => player.id === exposedMorganaId) : false;
+    const candidateOnTeam = team.some((player) => player.role === "merlin" || player.role === "morgana");
+    if (exposedMorganaOnTeam || condemnedOnTeam) {
+      return chance(opening ? 0.36 : critical ? 0.08 : 0.2);
+    }
+    if (suspiciousCount > 0) {
+      return chance(
+        protectedMerlinOnTeam || trustedGoodOnTeam ? (critical ? 0.6 : 0.72) : candidateOnTeam ? (critical ? 0.46 : 0.58) : critical ? 0.24 : 0.38
+      );
+    }
+    return chance(protectedMerlinOnTeam || trustedGoodOnTeam ? 0.92 : candidateOnTeam ? (opening ? 0.9 : 0.82) : critical ? 0.62 : 0.72);
+  }
+
+  if (condemnedOnTeam) {
+    return chance(opening ? 0.28 : critical ? 0.04 : 0.16);
+  }
+
+  if (suspiciousCount > 0) {
+    return chance(
+      selfOnTeam || trustedGoodOnTeam ? (critical ? 0.48 : 0.62) : Math.max(critical ? 0.08 : 0.18, 0.44 - suspiciousCount * (critical ? 0.18 : 0.12))
+    );
+  }
+  return chance(selfOnTeam || trustedGoodOnTeam ? 0.9 : opening ? 0.82 : 0.74);
 }
 
 function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean {
@@ -675,15 +750,239 @@ function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean 
     return true;
   }
   const currentFailCount = Object.values(room.game.missionVotes).filter((value) => !value).length;
-  return currentFailCount >= currentFailThreshold(room);
+  if (currentFailCount >= currentFailThreshold(room)) {
+    return true;
+  }
+
+  const evilFailures = room.game.quests.filter((quest) => !quest.success).length;
+  const goodSuccesses = room.game.quests.filter((quest) => quest.success).length;
+  const baseFailChance = bot.role === "oberon" ? 0.68 : bot.role === "mordred" ? 0.78 : 0.84;
+  const pressure = evilFailures >= 2 || goodSuccesses >= 2 ? 0.12 : 0;
+  const earlyRestraint = room.game.questIndex === 0 && room.game.proposedTeam.length > 2 ? -0.16 : 0;
+  return !chance(Math.min(0.97, Math.max(0.45, baseFailChance + pressure + earlyRestraint)));
 }
 
 function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
   const used = new Set(room.game.ladyUsedPlayerIds);
   const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id && !used.has(player.id));
+
+  if (bot.role && roleSide(bot.role) === "evil") {
+    const goodTargets = candidates.filter((player) => player.role && roleSide(player.role) === "good");
+    const pool = goodTargets.length > 0 ? goodTargets : candidates;
+    return pool[Math.floor(Math.random() * pool.length)].id;
+  }
+
   const unknownCandidates = candidates.filter((player) => !knownEvilIds(room, bot).has(player.id));
   const pool = unknownCandidates.length > 0 ? unknownCandidates : candidates;
-  return pool[Math.floor(Math.random() * pool.length)].id;
+  return [...pool].sort((first, second) => botSuspicionScore(room, bot, second) - botSuspicionScore(room, bot, first))[0].id;
+}
+
+function chooseBotLadyAnnouncement(
+  room: RoomInternal,
+  bot: PlayerInternal,
+  target: PlayerInternal,
+  actualAllegiance: Allegiance
+): Allegiance {
+  if (!bot.role || roleSide(bot.role) === "good") {
+    return actualAllegiance;
+  }
+  if (target.role && roleSide(target.role) === "evil") {
+    return chance(0.94) ? "good" : "evil";
+  }
+  return chance(isCriticalMoment(room) ? 0.88 : 0.74) ? "evil" : "good";
+}
+
+function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerInternal[] {
+  const knownEvil = knownEvilIds(room, bot);
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+  const critical = isCriticalMoment(room);
+  const opening = isOpeningRound(room);
+
+  return orderedPlayers(room)
+    .map((player, index) => {
+      let score = 0;
+      const suspicion = botSuspicionScore(room, bot, player);
+
+      if (player.id === bot.id) {
+        score += bot.role && roleSide(bot.role) === "evil" ? 2.2 : 2.8;
+      }
+
+      if (bot.role && roleSide(bot.role) === "evil") {
+        if (knownEvil.has(player.id)) {
+          score += player.id === bot.id ? 1.4 : critical ? 2.2 : 1.2;
+        } else {
+          score += 1.2 - suspicion * 0.35;
+          if (privateGood.has(player.id)) {
+            score += critical ? 0.55 : 0.35;
+          }
+        }
+      } else if (bot.role === "merlin") {
+        if (knownEvil.has(player.id) || privateEvil.has(player.id)) {
+          score -= opening ? 0.6 : critical ? 4.2 : 2.6;
+        } else {
+          score += 1.4 - suspicion * (critical ? 1.3 : 0.75);
+          if (privateGood.has(player.id)) {
+            score += critical ? 2.1 : 1.45;
+          }
+        }
+      } else if (bot.role === "percival") {
+        const protectedMerlinId = deducedMerlinIdForPercival(room, bot);
+        const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+        if (protectedMerlinId && player.id === protectedMerlinId) {
+          score += critical ? 2.5 : 3.1;
+        } else if ((exposedMorganaId && player.id === exposedMorganaId) || privateEvil.has(player.id)) {
+          score -= critical ? 4.5 : 3.1;
+        } else if (player.role === "merlin" || player.role === "morgana") {
+          score += critical ? 0.65 : 1.1;
+        }
+        score += 1.1 - suspicion * (critical ? 1.2 : 0.7);
+        if (privateGood.has(player.id)) {
+          score += critical ? 2.0 : 1.4;
+        }
+      } else {
+        score += 1 - suspicion * (critical ? 1.25 : 0.72);
+        if (privateGood.has(player.id)) {
+          score += critical ? 2.0 : 1.5;
+        }
+        if (privateEvil.has(player.id)) {
+          score -= critical ? 4.0 : 2.6;
+        }
+      }
+
+      score += (Math.random() - 0.5) * (opening ? 1.2 : critical ? 0.35 : 0.75);
+      return { player, score, index };
+    })
+    .sort((first, second) => second.score - first.score || first.index - second.index)
+    .map((item) => item.player);
+}
+
+function sortByBotTrust(room: RoomInternal, bot: PlayerInternal, players: PlayerInternal[]): PlayerInternal[] {
+  const order = new Map(room.game.playerOrder.map((id, index) => [id, index]));
+  return [...players].sort((first, second) => {
+    const scoreDiff = botSuspicionScore(room, bot, first) - botSuspicionScore(room, bot, second);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    return (order.get(first.id) ?? 0) - (order.get(second.id) ?? 0);
+  });
+}
+
+function isOpeningRound(room: RoomInternal): boolean {
+  return room.game.questIndex === 0 && room.game.quests.length === 0;
+}
+
+function deducedMerlinIdForPercival(room: RoomInternal, bot: PlayerInternal): string | null {
+  if (bot.role !== "percival") {
+    return null;
+  }
+
+  const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+  if (!exposedMorganaId) {
+    return null;
+  }
+
+  const merlinCandidate = orderedPlayers(room).find(
+    (player) => (player.role === "merlin" || player.role === "morgana") && player.id !== exposedMorganaId
+  );
+  return merlinCandidate?.id || null;
+}
+
+function exposedMorganaIdForPercival(room: RoomInternal, bot: PlayerInternal): string | null {
+  if (bot.role !== "percival") {
+    return null;
+  }
+
+  const ladyResult = room.game.ladyResults[bot.id];
+  if (!ladyResult || ladyResult.allegiance !== "evil") {
+    return null;
+  }
+
+  const target = room.players.get(ladyResult.targetId);
+  return target?.role === "morgana" ? target.id : null;
+}
+
+function privateLadyGoodIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
+  const result = room.game.ladyResults[bot.id];
+  return new Set(result?.allegiance === "good" ? [result.targetId] : []);
+}
+
+function privateLadyEvilIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
+  const result = room.game.ladyResults[bot.id];
+  return new Set(result?.allegiance === "evil" ? [result.targetId] : []);
+}
+
+function isCriticalMoment(room: RoomInternal): boolean {
+  const goodWins = room.game.quests.filter((quest) => quest.success).length;
+  const evilWins = room.game.quests.filter((quest) => !quest.success).length;
+  return room.game.questIndex >= 2 || goodWins >= 2 || evilWins >= 2 || room.game.failedVoteCount >= 3;
+}
+
+function chance(probability: number): boolean {
+  return Math.random() < Math.max(0, Math.min(1, probability));
+}
+
+function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
+  if (bot.role && roleSide(bot.role) === "good" && player.id === bot.id) {
+    return 0;
+  }
+
+  let score = 0;
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+
+  if (privateGood.has(player.id)) {
+    score -= bot.role && roleSide(bot.role) === "good" ? 2.2 : 0.5;
+  }
+  if (privateEvil.has(player.id)) {
+    score += bot.role && roleSide(bot.role) === "good" ? 5.0 : 0.6;
+  }
+
+  if (bot.role === "percival") {
+    const protectedMerlinId = deducedMerlinIdForPercival(room, bot);
+    const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+    if (player.id === protectedMerlinId) {
+      score -= 2.6;
+    }
+    if (player.id === exposedMorganaId) {
+      score += 5.2;
+    }
+  }
+
+  for (const quest of room.game.quests) {
+    if (!quest.team.includes(player.id)) {
+      continue;
+    }
+
+    if (quest.success) {
+      score -= 0.45;
+      continue;
+    }
+
+    const teamSizeWeight = quest.team.length <= 2 ? 1.6 : 1.15;
+    score += Math.max(1, quest.failCount) * teamSizeWeight;
+  }
+
+  score += publicLadyClaimSuspicion(room, bot, player);
+
+  return Math.max(0, score);
+}
+
+function publicLadyClaimSuspicion(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
+  let score = 0;
+  const botResult = room.game.ladyResults[bot.id];
+
+  for (const inspection of room.game.ladyInspections) {
+    if (inspection.targetId !== player.id || !inspection.announcedAllegiance) {
+      continue;
+    }
+
+    const inspectorPrivatelyKnownEvil = botResult?.targetId === inspection.fromId && botResult.allegiance === "evil";
+    const trustMultiplier = inspectorPrivatelyKnownEvil ? -0.7 : 1;
+    score += (inspection.announcedAllegiance === "evil" ? 0.85 : -0.35) * trustMultiplier;
+  }
+
+  return score;
 }
 
 function knownEvilPlayers(room: RoomInternal, bot: PlayerInternal): PlayerInternal[] {
@@ -697,6 +996,13 @@ function knownEvilPlayers(room: RoomInternal, bot: PlayerInternal): PlayerIntern
   }
   if (bot.role === "merlin") {
     return orderedPlayers(room).filter((player) => player.role && roleSide(player.role) === "evil" && player.role !== "mordred");
+  }
+  if (bot.role === "percival") {
+    const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+    const exposedMorgana = exposedMorganaId ? room.players.get(exposedMorganaId) : null;
+    if (exposedMorgana) {
+      return [exposedMorgana];
+    }
   }
   const ladyResult = room.game.ladyResults[bot.id];
   if (ladyResult?.allegiance === "evil") {

@@ -42,6 +42,7 @@ export type RoleKnowledge = {
 export type LadyInspectionPublic = {
   fromId: string;
   targetId: string;
+  announcedAllegiance: Allegiance | null;
 };
 
 export type LadyResult = {
@@ -74,6 +75,7 @@ export type GamePublicState = {
 
 export type RoomView = {
   roomCode: string;
+  ladyEnabledSetting: boolean;
   idleWarningAt: number;
   idleTimeoutAt: number;
   you: PlayerPublic | null;
@@ -102,11 +104,20 @@ export type RoomJoinedPayload = {
   playerId: string;
 };
 
+export type LobbyRoomSummary = {
+  hostName: string;
+  playerCount: number;
+  maxPlayers: number;
+  phase: GamePhase;
+  updatedAt: number;
+};
+
 export type ClientToServerEvents = {
   createRoom: (payload: CreateRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
   joinRoom: (payload: JoinRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
   addBot: () => void;
   removeBot: (playerId: string) => void;
+  setLadyEnabled: (enabled: boolean) => void;
   startGame: () => void;
   proposeTeam: (teamIds: string[]) => void;
   castTeamVote: (approve: boolean) => void;
@@ -119,6 +130,7 @@ export type ClientToServerEvents = {
 
 export type ServerToClientEvents = {
   roomState: (state: RoomView) => void;
+  lobbyRooms: (rooms: LobbyRoomSummary[]) => void;
   roomError: (message: string) => void;
   roomClosed: (message: string) => void;
 };

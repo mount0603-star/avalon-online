@@ -20,6 +20,7 @@ import {
   resetRoom,
   rooms,
   runBotActions,
+  setLadyEnabled,
   startGame,
   touchRoom,
   useLadyOfLake
@@ -27,6 +28,7 @@ import {
 import type {
   ClientToServerEvents,
   InterServerEvents,
+  LobbyRoomSummary,
   ServerToClientEvents,
   SocketData
 } from "../shared/types";
@@ -58,6 +60,8 @@ app.get("*", (_request, response, next) => {
 });
 
 io.on("connection", (socket) => {
+  socket.emit("lobbyRooms", buildLobbySummaries());
+
   socket.on("createRoom", (payload, ack) => {
     try {
       const { room, playerId } = createRoom(payload.name, payload.playerId);
@@ -68,6 +72,7 @@ io.on("connection", (socket) => {
       touchRoom(room);
       ack({ roomCode: room.code, playerId });
       emitRoom(room.code);
+      emitLobbyRooms();
     } catch (error) {
       ack({ error: getErrorMessage(error) });
     }
@@ -83,6 +88,7 @@ io.on("connection", (socket) => {
       touchRoom(room);
       ack({ roomCode: room.code, playerId });
       emitRoom(room.code);
+      emitLobbyRooms();
     } catch (error) {
       ack({ error: getErrorMessage(error) });
     }
@@ -91,6 +97,7 @@ io.on("connection", (socket) => {
   socket.on("startGame", () => runAction(socket, (room, playerId) => startGame(room, playerId)));
   socket.on("addBot", () => runAction(socket, (room, playerId) => addBot(room, playerId)));
   socket.on("removeBot", (botId) => runAction(socket, (room, playerId) => removeBot(room, playerId, botId)));
+  socket.on("setLadyEnabled", (enabled) => runAction(socket, (room, playerId) => setLadyEnabled(room, playerId, enabled)));
   socket.on("proposeTeam", (teamIds) => runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds)));
   socket.on("castTeamVote", (approve) => runAction(socket, (room, playerId) => castTeamVote(room, playerId, approve)));
   socket.on("castMissionVote", (success) => runAction(socket, (room, playerId) => castMissionVote(room, playerId, success)));
@@ -120,6 +127,7 @@ io.on("connection", (socket) => {
       touchRoom(room);
       runBotActions(room);
       emitRoom(room.code);
+      emitLobbyRooms();
     } catch (error) {
       socket.emit("roomError", getErrorMessage(error));
     }
@@ -149,6 +157,7 @@ function runAction(
     touchRoom(room);
     runBotActions(room);
     emitRoom(room.code);
+    emitLobbyRooms();
   } catch (error) {
     socket.emit("roomError", getErrorMessage(error));
   }
@@ -161,6 +170,7 @@ function closeRoom(roomCode: string, message: string): void {
   io.to(roomCode).emit("roomClosed", message);
   io.in(roomCode).socketsLeave(roomCode);
   rooms.delete(roomCode);
+  emitLobbyRooms();
 }
 
 function cleanupIdleRooms(): void {
@@ -182,6 +192,22 @@ function emitRoom(roomCode: string): void {
       io.to(player.socketId).emit("roomState", buildRoomView(room, player.id));
     }
   }
+}
+
+function emitLobbyRooms(): void {
+  io.emit("lobbyRooms", buildLobbySummaries());
+}
+
+function buildLobbySummaries(): LobbyRoomSummary[] {
+  return Array.from(rooms.values())
+    .map((room) => ({
+      hostName: room.players.get(room.hostId)?.name || "未知房主",
+      playerCount: room.players.size,
+      maxPlayers: 10,
+      phase: room.game.phase,
+      updatedAt: room.lastActivityAt
+    }))
+    .sort((first, second) => second.updatedAt - first.updatedAt);
 }
 
 function getErrorMessage(error: unknown): string {
