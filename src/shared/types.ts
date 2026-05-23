@@ -74,6 +74,8 @@ export type GamePublicState = {
 
 export type RoomView = {
   roomCode: string;
+  idleWarningAt: number;
+  idleTimeoutAt: number;
   you: PlayerPublic | null;
   players: PlayerPublic[];
   game: GamePublicState;
@@ -112,11 +114,13 @@ export type ClientToServerEvents = {
   useLadyOfLake: (targetId: string) => void;
   assassinate: (targetId: string) => void;
   resetRoom: () => void;
+  leaveRoom: () => void;
 };
 
 export type ServerToClientEvents = {
   roomState: (state: RoomView) => void;
   roomError: (message: string) => void;
+  roomClosed: (message: string) => void;
 };
 
 export type InterServerEvents = Record<string, never>;

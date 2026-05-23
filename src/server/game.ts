@@ -50,9 +50,14 @@ export type RoomInternal = {
   hostId: string;
   players: Map<string, PlayerInternal>;
   game: GameInternal;
+  createdAt: number;
+  lastActivityAt: number;
 };
 
 export const rooms = new Map<string, RoomInternal>();
+
+export const IDLE_WARNING_MS = 15 * 60 * 1000;
+export const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const BOT_NAMES = ["蓋瑞斯", "崔斯坦", "伊蓮", "貝狄威爾", "蘭馬洛克", "艾克特", "凱", "加荷里斯"];
 
@@ -96,6 +101,7 @@ export function normalizeName(name: string): string {
 export function createRoom(name: string, existingPlayerId?: string): { room: RoomInternal; playerId: string } {
   const code = generateRoomCode();
   const playerId = existingPlayerId || randomUUID();
+  const now = Date.now();
   const player: PlayerInternal = {
     id: playerId,
     name: normalizeName(name),
@@ -109,7 +115,9 @@ export function createRoom(name: string, existingPlayerId?: string): { room: Roo
     code,
     hostId: playerId,
     players: new Map([[playerId, player]]),
-    game: emptyGame()
+    game: emptyGame(),
+    createdAt: now,
+    lastActivityAt: now
   };
   rooms.set(code, room);
   return { room, playerId };
@@ -185,10 +193,47 @@ export function removeBot(room: RoomInternal, hostId: string, botId: string): vo
   room.players.delete(botId);
 }
 
+export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteRoom: boolean } {
+  const player = requirePlayer(room, playerId);
+
+  if (room.game.phase === "lobby") {
+    room.players.delete(playerId);
+    if (!hasHumanPlayers(room)) {
+      return { shouldDeleteRoom: true };
+    }
+    if (room.hostId === playerId) {
+      promoteHost(room);
+    }
+    return { shouldDeleteRoom: false };
+  }
+
+  player.socketId = null;
+  player.connected = true;
+  player.isBot = true;
+  player.isHost = false;
+
+  if (!hasHumanPlayers(room)) {
+    return { shouldDeleteRoom: true };
+  }
+  if (room.hostId === playerId) {
+    promoteHost(room);
+  }
+
+  return { shouldDeleteRoom: false };
+}
+
 export function attachSocket(room: RoomInternal, playerId: string, socketId: string): void {
   const player = requirePlayer(room, playerId);
   player.socketId = socketId;
   player.connected = true;
+}
+
+export function touchRoom(room: RoomInternal, now = Date.now()): void {
+  room.lastActivityAt = now;
+}
+
+export function isRoomIdleExpired(room: RoomInternal, now = Date.now()): boolean {
+  return now - room.lastActivityAt >= IDLE_TIMEOUT_MS;
 }
 
 export function detachSocket(socketId: string): RoomInternal | null {
@@ -421,6 +466,8 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
 
   return {
     roomCode: room.code,
+    idleWarningAt: room.lastActivityAt + IDLE_WARNING_MS,
+    idleTimeoutAt: room.lastActivityAt + IDLE_TIMEOUT_MS,
     you: viewer ? toPublicPlayer(viewer) : null,
     players: orderedPlayers(room).map(toPublicPlayer),
     game: {
@@ -678,6 +725,22 @@ function toPublicPlayer(player: PlayerInternal): PlayerPublic {
     isHost: player.isHost,
     isBot: player.isBot
   };
+}
+
+function hasHumanPlayers(room: RoomInternal): boolean {
+  return Array.from(room.players.values()).some((player) => !player.isBot);
+}
+
+function promoteHost(room: RoomInternal): void {
+  const nextHost = Array.from(room.players.values()).find((player) => !player.isBot);
+  if (!nextHost) {
+    return;
+  }
+
+  for (const player of room.players.values()) {
+    player.isHost = player.id === nextHost.id;
+  }
+  room.hostId = nextHost.id;
 }
 
 function currentTeamSize(room: RoomInternal): number {

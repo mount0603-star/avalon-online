@@ -3,11 +3,13 @@ import {
   Bot,
   Check,
   Circle,
+  Clock,
   Copy,
   Crown,
   Eye,
   Flag,
   LogIn,
+  LogOut,
   Plus,
   RotateCcw,
   Sparkles,
@@ -102,17 +104,23 @@ export function App() {
       localStorage.setItem(ROOM_CODE_KEY, nextRoom.roomCode);
     };
     const onError = (message: string) => setError(message);
+    const onClosed = (message: string) => {
+      clearRoomSession();
+      setError(message);
+    };
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
 
     socket.on("roomState", onState);
     socket.on("roomError", onError);
+    socket.on("roomClosed", onClosed);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
 
     return () => {
       socket.off("roomState", onState);
       socket.off("roomError", onError);
+      socket.off("roomClosed", onClosed);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
     };
@@ -173,6 +181,13 @@ export function App() {
     setRoomCode(payload.roomCode);
   }
 
+  function clearRoomSession() {
+    localStorage.removeItem(PLAYER_ID_KEY);
+    localStorage.removeItem(ROOM_CODE_KEY);
+    setRoom(null);
+    setRoomCode("");
+  }
+
   function createRoom() {
     const cleanName = name.trim();
     if (!cleanName) {
@@ -223,6 +238,12 @@ export function App() {
     );
   }
 
+  function leaveCurrentRoom() {
+    socket.emit("leaveRoom");
+    clearRoomSession();
+    setError("");
+  }
+
   return (
     <main
       className="app-shell"
@@ -251,7 +272,7 @@ export function App() {
           onJoin={joinRoom}
         />
       ) : (
-        <GameRoom room={room} error={error} />
+        <GameRoom room={room} error={error} onLeave={leaveCurrentRoom} />
       )}
     </main>
   );
@@ -302,7 +323,7 @@ function WelcomePanel(props: WelcomePanelProps) {
   );
 }
 
-function GameRoom({ room, error }: { room: RoomView; error: string }) {
+function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onLeave: () => void }) {
   const isHost = room.you?.isHost ?? false;
 
   return (
@@ -317,9 +338,16 @@ function GameRoom({ room, error }: { room: RoomView; error: string }) {
             </button>
           </div>
         </div>
-        <div className="phase-pill">
-          <Flag size={16} />
-          {phaseLabel[room.game.phase]}
+        <div className="room-actions">
+          <IdleStatus room={room} />
+          <div className="phase-pill">
+            <Flag size={16} />
+            {phaseLabel[room.game.phase]}
+          </div>
+          <button className="secondary-button compact-button" onClick={onLeave}>
+            <LogOut size={17} />
+            離開房間
+          </button>
         </div>
       </header>
 
@@ -345,6 +373,25 @@ function GameRoom({ room, error }: { room: RoomView; error: string }) {
         </aside>
       </div>
     </section>
+  );
+}
+
+function IdleStatus({ room }: { room: RoomView }) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000);
+    return () => window.clearInterval(timer);
+  }, [room.roomCode]);
+
+  const remainingMs = Math.max(0, room.idleTimeoutAt - now);
+  const isWarning = now >= room.idleWarningAt;
+
+  return (
+    <div className={isWarning ? "idle-pill warning" : "idle-pill"} title="任何房間操作都會重置閒置時間">
+      <Clock size={16} />
+      閒置 {formatDuration(remainingMs)} 後關房
+    </div>
   );
 }
 
@@ -844,6 +891,16 @@ function playerName(room: RoomView, playerId: string | null): string {
     return "未知";
   }
   return room.players.find((player) => player.id === playerId)?.name || "未知";
+}
+
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60000));
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) {
+    return `${hours} 小時 ${minutes} 分`;
+  }
+  return `${minutes} 分`;
 }
 
 function playerSeatClass(room: RoomView, player: PlayerPublic): string {

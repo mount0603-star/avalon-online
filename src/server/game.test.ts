@@ -10,7 +10,10 @@ import {
   buildRoomView,
   addBot,
   runBotActions,
-  useLadyOfLake
+  useLadyOfLake,
+  leaveRoom,
+  isRoomIdleExpired,
+  IDLE_TIMEOUT_MS
 } from "./game";
 import { ROLE_DEFINITIONS, getRoleSet, roleSide } from "../shared/roles";
 
@@ -104,4 +107,26 @@ test("lady of the lake reveals allegiance only to the holder and passes token", 
   assert.equal(room.game.ladyResults[hostId].targetId, targetId);
   assert.equal(buildRoomView(room, hostId).ladyResult?.targetId, targetId);
   assert.equal(buildRoomView(room, targetId).ladyResult, null);
+});
+
+test("leaving during a game lets a bot take over and promotes a human host", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  const { playerId: nextHostId } = joinRoom(room.code, "B");
+  ["C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+
+  const result = leaveRoom(room, hostId);
+
+  assert.equal(result.shouldDeleteRoom, false);
+  assert.equal(room.players.get(hostId)?.isBot, true);
+  assert.equal(room.hostId, nextHostId);
+  assert.equal(room.players.get(nextHostId)?.isHost, true);
+});
+
+test("idle rooms expire after the configured timeout", () => {
+  const { room } = createRoom("A");
+  const now = Date.now();
+  room.lastActivityAt = now - IDLE_TIMEOUT_MS - 1;
+
+  assert.equal(isRoomIdleExpired(room, now), true);
 });
