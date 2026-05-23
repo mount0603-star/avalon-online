@@ -28,7 +28,7 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin: true,
     methods: ["GET", "POST"]
   }
 });
@@ -132,4 +132,3 @@ const port = Number(process.env.PORT || 4000);
 httpServer.listen(port, () => {
   console.log(`Avalon server listening on http://localhost:${port}`);
 });
-
