@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -268,7 +269,8 @@ label {
   font-weight: 800;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 48px;
   border: 1px solid rgba(247, 240, 223, 0.16);
@@ -279,9 +281,14 @@ input {
   outline: none;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--gold);
   box-shadow: 0 0 0 3px rgba(213, 168, 59, 0.18);
+}
+
+select {
+  cursor: pointer;
 }
 
 .button-row {
@@ -343,6 +350,23 @@ input:focus {
   padding: 0 12px;
   color: var(--paper);
   cursor: pointer;
+}
+
+.setting-select-row {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 8px 12px;
+  color: var(--paper);
+}
+
+.setting-select-row select {
+  min-height: 38px;
+  padding: 0 10px;
 }
 
 .toggle-row input {
@@ -466,6 +490,7 @@ input:focus {
     repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 10px);
   box-shadow: inset 0 0 0 1px rgba(255, 235, 180, 0.24), 0 12px 24px rgba(0, 0, 0, 0.26);
   overflow: hidden;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, outline-color 0.16s ease;
 }
 
 .seat-card.known-card {
@@ -496,6 +521,117 @@ input:focus {
   box-shadow: inset 0 0 0 1px rgba(255, 235, 180, 0.3), 0 0 0 2px rgba(213, 168, 59, 0.52), 0 16px 28px rgba(0, 0, 0, 0.3);
 }
 
+.seat-card.quest-member-card {
+  box-shadow: inset 0 0 0 1px rgba(255, 235, 180, 0.34), 0 0 0 2px rgba(245, 236, 216, 0.32), 0 16px 28px rgba(0, 0, 0, 0.32);
+}
+
+.seat-card.leader-card.quest-member-card {
+  box-shadow: inset 0 0 0 1px rgba(255, 235, 180, 0.38), 0 0 0 2px rgba(213, 168, 59, 0.72), 0 0 0 4px rgba(245, 236, 216, 0.18), 0 18px 32px rgba(0, 0, 0, 0.36);
+}
+
+.seat-card.selectable-seat-card {
+  cursor: pointer;
+}
+
+.seat-card.selectable-seat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: inset 0 0 0 1px rgba(255, 235, 180, 0.38), 0 0 0 2px rgba(76, 167, 165, 0.5), 0 18px 30px rgba(0, 0, 0, 0.36);
+}
+
+.seat-card.selectable-seat-card:focus-visible {
+  outline: 3px solid rgba(141, 225, 223, 0.82);
+  outline-offset: 3px;
+}
+
+.seat-card.draft-team-card {
+  outline: 3px solid rgba(141, 225, 223, 0.84);
+}
+
+.seat-corner-marks {
+  position: absolute;
+  inset: 9px 9px auto 9px;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+}
+
+.seat-corner-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 245, 212, 0.62);
+  background: rgba(13, 12, 9, 0.78);
+  box-shadow: 0 8px 14px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.leader-mark {
+  color: #ffd36a;
+  background: linear-gradient(180deg, rgba(88, 65, 20, 0.92), rgba(18, 15, 10, 0.86));
+}
+
+.quest-mark {
+  margin-left: auto;
+  color: #8de1df;
+  background: linear-gradient(180deg, rgba(28, 88, 88, 0.9), rgba(11, 18, 18, 0.86));
+}
+
+.seat-bottom-marks {
+  position: absolute;
+  inset: auto 9px 9px 9px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.seat-bottom-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 25px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 245, 212, 0.5);
+  background: rgba(9, 9, 8, 0.8);
+  color: var(--paper);
+  font-size: 0.68rem;
+  font-weight: 950;
+  box-shadow: 0 8px 14px rgba(0, 0, 0, 0.32);
+}
+
+.lady-holder-mark {
+  padding: 0 8px;
+  color: #9be4d9;
+  background: linear-gradient(180deg, rgba(31, 91, 91, 0.9), rgba(8, 18, 18, 0.88));
+}
+
+.seat-order-mark {
+  margin-left: auto;
+  width: 28px;
+  color: #ffd36a;
+  background: linear-gradient(180deg, rgba(92, 69, 24, 0.94), rgba(19, 16, 10, 0.9));
+}
+
+.seat-card.intel-known-good {
+  outline: 2px solid rgba(120, 224, 218, 0.84);
+}
+
+.seat-card.intel-known-evil {
+  outline: 2px solid rgba(255, 127, 118, 0.9);
+}
+
+.seat-card.lady-known-good {
+  outline: 2px solid rgba(120, 224, 190, 0.84);
+}
+
+.seat-card.lady-known-evil {
+  outline: 2px solid rgba(255, 127, 118, 0.9);
+}
+
 .seat-card-face {
   position: relative;
   z-index: 1;
@@ -503,6 +639,7 @@ input:focus {
   align-content: end;
   min-height: 156px;
   gap: 6px;
+  padding: 36px 0 30px;
 }
 
 .seat-name {
@@ -557,6 +694,17 @@ input:focus {
 .intel-badge {
   justify-self: start;
   background: rgba(76, 167, 165, 0.86);
+  color: #071412;
+}
+
+.intel-badge.intel-evil {
+  background: rgba(184, 74, 74, 0.92);
+  color: #fff5f1;
+}
+
+.intel-badge.intel-good,
+.intel-badge.intel-candidate {
+  background: rgba(76, 167, 165, 0.92);
   color: #071412;
 }
 
@@ -842,6 +990,28 @@ input:focus {
   font-weight: 950;
 }
 
+.lancelot-event {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin-top: 12px;
+  border: 1px solid rgba(245, 236, 216, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted);
+  padding: 0 12px;
+  font-weight: 900;
+}
+
+.lancelot-event.switched {
+  border-color: rgba(213, 168, 59, 0.52);
+  color: #ffe0a2;
+  background: rgba(213, 168, 59, 0.13);
+}
+
 .quest-node {
   display: grid;
   place-items: center;
@@ -956,6 +1126,22 @@ input:focus {
   background-position: 66.666% 0%;
 }
 
+.card-art-lancelotGood {
+  background-image:
+    linear-gradient(180deg, transparent 64%, rgba(0, 0, 0, 0.54)),
+    var(--lancelot-good);
+  background-size: cover;
+  background-position: center;
+}
+
+.seat-card.known-card.card-art-lancelotGood {
+  background-image:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.68)),
+    var(--lancelot-good);
+  background-size: cover;
+  background-position: center;
+}
+
 .card-art-assassin {
   background-position: 0% 100%;
 }
@@ -970,6 +1156,22 @@ input:focus {
 
 .card-art-oberon {
   background-position: 100% 100%;
+}
+
+.card-art-lancelotEvil {
+  background-image:
+    linear-gradient(180deg, transparent 64%, rgba(0, 0, 0, 0.54)),
+    var(--lancelot-evil);
+  background-size: cover;
+  background-position: center;
+}
+
+.seat-card.known-card.card-art-lancelotEvil {
+  background-image:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.68)),
+    var(--lancelot-evil);
+  background-size: cover;
+  background-position: center;
 }
 
 .card-art-minion {
@@ -1053,6 +1255,11 @@ input:focus {
   margin: 18px 0;
 }
 
+.compact-select-grid {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin: 10px 0 4px;
+}
+
 .select-player {
   justify-content: flex-start;
   min-height: 52px;
@@ -1065,6 +1272,41 @@ input:focus {
 .select-player.selected {
   border-color: rgba(213, 168, 59, 0.72);
   background: rgba(213, 168, 59, 0.18);
+}
+
+.excalibur-picker,
+.lake-result-box {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  border: 1px solid rgba(213, 168, 59, 0.24);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 14px;
+}
+
+.excalibur-picker strong,
+.lake-result-box strong {
+  color: var(--paper);
+}
+
+.lake-result-box span {
+  color: var(--muted);
+  font-weight: 850;
+}
+
+.excalibur-vote-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.excalibur-vote-grid span {
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--paper);
+  font-weight: 900;
 }
 
 .team-strip {
@@ -1085,6 +1327,28 @@ input:focus {
   font-weight: 950;
 }
 
+.team-draft-summary {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(247, 240, 223, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 12px;
+}
+
+.team-draft-summary > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--paper);
+  font-weight: 950;
+}
+
+.team-draft-summary > div:first-child span {
+  color: #8de1df;
+}
+
 .waiting-line,
 .muted-line {
   color: var(--muted);
@@ -1098,8 +1362,87 @@ input:focus {
 
 .role-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
   gap: 10px;
+}
+
+.role-config-summary {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.role-config-summary span {
+  min-height: 30px;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--paper);
+  font-size: 0.82rem;
+  font-weight: 950;
+}
+
+.collapsed-role-preview {
+  padding: 0;
+  overflow: hidden;
+}
+
+.collapsed-role-preview summary,
+.collapsed-info-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 54px;
+  padding: 0 16px;
+  color: var(--paper);
+  cursor: pointer;
+  font-weight: 950;
+  list-style: none;
+}
+
+.collapsed-role-preview summary::-webkit-details-marker,
+.collapsed-info-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsed-role-preview summary span,
+.collapsed-info-panel summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collapsed-role-preview summary b,
+.collapsed-info-panel summary b {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.collapsed-info-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.collapsed-info-panel .history-list {
+  padding: 0 16px 16px;
+}
+
+.collapsed-role-preview .role-gallery-grid {
+  padding: 0 16px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+}
+
+.collapsed-role-preview .role-gallery-card {
+  min-height: 132px;
+  padding: 7px;
+}
+
+.collapsed-role-preview .role-gallery-art {
+  width: min(100%, 76px);
+}
+
+.collapsed-role-preview .role-gallery-card strong {
+  font-size: 0.82rem;
 }
 
 .role-chip {
@@ -1123,7 +1466,7 @@ input:focus {
   gap: 8px;
   align-items: start;
   justify-items: center;
-  min-height: 154px;
+  min-height: 174px;
   border-radius: 7px;
   padding: 9px;
 }
@@ -1136,10 +1479,28 @@ input:focus {
 }
 
 .role-gallery-art {
-  width: min(100%, 92px);
+  width: min(100%, 112px);
   aspect-ratio: 3 / 4;
   border-radius: 6px;
   box-shadow: inset 0 0 0 1px rgba(255, 245, 212, 0.22), 0 10px 20px rgba(0, 0, 0, 0.26);
+}
+
+.bot-opinion-row {
+  display: grid;
+  gap: 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  padding: 9px 10px;
+}
+
+.bot-opinion-row strong {
+  color: var(--gold);
+}
+
+.bot-opinion-row span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .role-mini {
@@ -1294,12 +1655,32 @@ input:focus {
 }
 
 @media (max-width: 1080px) {
+  .welcome-grid {
+    grid-template-columns: minmax(280px, 420px) minmax(280px, 1fr);
+  }
+
+  .welcome-grid .role-preview {
+    grid-column: 1 / -1;
+  }
+
   .game-grid {
     grid-template-columns: 1fr;
   }
 
   .side-panel {
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+
+  .room-layout .game-grid > .side-panel:first-child {
+    order: 1;
+  }
+
+  .play-panel {
+    order: 2;
+  }
+
+  .room-layout .game-grid > .side-panel:last-child {
+    order: 3;
   }
 }
 
@@ -1325,8 +1706,92 @@ input:focus {
     grid-template-columns: 1fr;
   }
 
+  .welcome-grid .role-preview {
+    grid-column: auto;
+  }
+
   .identity-panel {
     flex-direction: column;
+  }
+
+  .identity-panel,
+  .action-panel {
+    min-height: 0;
+    padding: 16px;
+  }
+
+  .role-portrait {
+    width: 108px;
+  }
+
+  .mission-board {
+    padding: 16px 14px;
+    min-height: 0;
+  }
+
+  .mission-board::before,
+  .mission-board::after {
+    display: none;
+  }
+
+  .quest-path {
+    grid-template-columns: repeat(5, minmax(56px, 1fr));
+    gap: 8px;
+    overflow-x: visible;
+    padding: 4px 0 10px;
+  }
+
+  .quest-medallion {
+    width: min(100%, 72px);
+  }
+
+  .quest-medallion small,
+  .quest-medallion span {
+    font-size: 0.64rem;
+  }
+
+  .quest-medallion strong {
+    font-size: 1.9rem;
+  }
+
+  .quest-caption {
+    min-height: 30px;
+    padding: 6px 4px;
+    font-size: 0.66rem;
+  }
+
+  .side-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .room-layout .game-grid > .side-panel:first-child .host-controls {
+    order: -1;
+  }
+
+  .seat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  }
+
+  .seat-card {
+    min-height: 132px;
+  }
+
+  .seat-card-face {
+    min-height: 118px;
+  }
+
+  .role-gallery-grid {
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  }
+
+  .history-list {
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+
+  .collapsed-role-preview .role-gallery-grid {
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   }
 
   .button-row {

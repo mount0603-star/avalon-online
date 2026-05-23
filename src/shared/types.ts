@@ -1,5 +1,7 @@
 import type { Allegiance, RoleId } from "./roles";
 
+export type LadyHolderMode = "tail" | "random";
+
 export type PlayerPublic = {
   id: string;
   name: string;
@@ -13,7 +15,9 @@ export type GamePhase =
   | "team-building"
   | "team-vote"
   | "mission"
+  | "excalibur"
   | "lady"
+  | "lancelot"
   | "assassination"
   | "finished";
 
@@ -23,6 +27,16 @@ export type QuestResult = {
   success: boolean;
   failCount: number;
   failThreshold: number;
+  excaliburHolderId: string | null;
+  excaliburTargetId: string | null;
+};
+
+export type LancelotCard = "switch" | "blank";
+
+export type LancelotDrawPublic = {
+  questIndex: number;
+  card: LancelotCard;
+  switched: boolean;
 };
 
 export type VoteRecord = {
@@ -39,6 +53,13 @@ export type RoleKnowledge = {
   playerIds: string[];
 };
 
+export type BotOpinion = {
+  id: number;
+  playerId: string;
+  phase: "team-vote" | "lady" | "assassination" | "excalibur";
+  message: string;
+};
+
 export type LadyInspectionPublic = {
   fromId: string;
   targetId: string;
@@ -48,6 +69,10 @@ export type LadyInspectionPublic = {
 export type LadyResult = {
   targetId: string;
   allegiance: Allegiance;
+};
+
+export type LadyPendingResult = LadyResult & {
+  fromId: string;
 };
 
 export type GamePublicState = {
@@ -63,27 +88,42 @@ export type GamePublicState = {
   missionVotesSubmitted: string[];
   quests: QuestResult[];
   voteHistory: VoteRecord[];
+  botOpinions: BotOpinion[];
   winner: Allegiance | null;
   winReason: string | null;
   assassinId: string | null;
   assassinTargetId: string | null;
+  assassinationVotesSubmitted: string[];
+  assassinationVoteCount: number;
+  excaliburEnabled: boolean;
+  excaliburHolderId: string | null;
+  excaliburTargetId: string | null;
+  excaliburVotes: Record<string, boolean> | null;
   ladyEnabled: boolean;
   ladyHolderId: string | null;
   ladyUsedPlayerIds: string[];
   ladyInspections: LadyInspectionPublic[];
+  lancelotEnabled: boolean;
+  lancelotDraws: LancelotDrawPublic[];
+  lancelotDeckRemaining: number;
 };
 
 export type RoomView = {
   roomCode: string;
   ladyEnabledSetting: boolean;
+  ladyHolderModeSetting: LadyHolderMode;
+  lancelotEnabledSetting: boolean;
+  excaliburEnabledSetting: boolean;
   idleWarningAt: number;
   idleTimeoutAt: number;
   you: PlayerPublic | null;
   players: PlayerPublic[];
   game: GamePublicState;
   yourRole: RoleId | null;
+  yourAllegiance: Allegiance | null;
   roleKnowledge: RoleKnowledge[];
   ladyResult: LadyResult | null;
+  ladyPendingResult: LadyPendingResult | null;
   revealedRoles: Record<string, RoleId> | null;
   error?: string;
 };
@@ -118,11 +158,15 @@ export type ClientToServerEvents = {
   addBot: () => void;
   removeBot: (playerId: string) => void;
   setLadyEnabled: (enabled: boolean) => void;
+  setLadyHolderMode: (mode: LadyHolderMode) => void;
+  setLancelotEnabled: (enabled: boolean) => void;
+  setExcaliburEnabled: (enabled: boolean) => void;
   startGame: () => void;
-  proposeTeam: (teamIds: string[]) => void;
+  proposeTeam: (teamIds: string[], excaliburHolderId?: string | null) => void;
   castTeamVote: (approve: boolean) => void;
   castMissionVote: (success: boolean) => void;
-  useLadyOfLake: (targetId: string) => void;
+  useExcalibur: (targetId: string | null) => void;
+  useLadyOfLake: (targetId: string, announcedAllegiance?: Allegiance | null) => void;
   assassinate: (targetId: string) => void;
   resetRoom: () => void;
   leaveRoom: () => void;

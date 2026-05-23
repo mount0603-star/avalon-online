@@ -13,7 +13,12 @@ import {
 import type {
   GamePublicState,
   PlayerPublic,
+  BotOpinion,
+  LadyHolderMode,
+  LadyPendingResult,
   LadyResult,
+  LancelotCard,
+  LancelotDrawPublic,
   QuestResult,
   RoleKnowledge,
   RoomView,
@@ -36,20 +41,33 @@ export type GameInternal = {
   missionVotes: Record<string, boolean>;
   quests: QuestResult[];
   voteHistory: VoteRecord[];
+  botOpinions: BotOpinion[];
   winner: "good" | "evil" | null;
   winReason: string | null;
   assassinTargetId: string | null;
+  assassinationVotes: Record<string, string>;
+  excaliburEnabled: boolean;
+  excaliburHolderId: string | null;
+  excaliburTargetId: string | null;
   ladyEnabled: boolean;
   ladyHolderId: string | null;
   ladyUsedPlayerIds: string[];
   ladyInspections: { fromId: string; targetId: string; announcedAllegiance: Allegiance | null }[];
   ladyResults: Record<string, LadyResult>;
+  ladyPendingResult: LadyPendingResult | null;
+  lancelotEnabled: boolean;
+  lancelotAllegiances: Record<string, Allegiance>;
+  lancelotDeck: LancelotCard[];
+  lancelotDraws: LancelotDrawPublic[];
 };
 
 export type RoomInternal = {
   code: string;
   hostId: string;
   ladyEnabledSetting: boolean;
+  ladyHolderModeSetting: LadyHolderMode;
+  lancelotEnabledSetting: boolean;
+  excaliburEnabledSetting: boolean;
   players: Map<string, PlayerInternal>;
   game: GameInternal;
   createdAt: number;
@@ -75,14 +93,24 @@ export function emptyGame(): GameInternal {
     missionVotes: {},
     quests: [],
     voteHistory: [],
+    botOpinions: [],
     winner: null,
     winReason: null,
     assassinTargetId: null,
+    assassinationVotes: {},
+    excaliburEnabled: false,
+    excaliburHolderId: null,
+    excaliburTargetId: null,
     ladyEnabled: false,
     ladyHolderId: null,
     ladyUsedPlayerIds: [],
     ladyInspections: [],
-    ladyResults: {}
+    ladyResults: {},
+    ladyPendingResult: null,
+    lancelotEnabled: false,
+    lancelotAllegiances: {},
+    lancelotDeck: [],
+    lancelotDraws: []
   };
 }
 
@@ -117,6 +145,9 @@ export function createRoom(name: string, existingPlayerId?: string): { room: Roo
     code,
     hostId: playerId,
     ladyEnabledSetting: true,
+    ladyHolderModeSetting: "tail",
+    lancelotEnabledSetting: false,
+    excaliburEnabledSetting: false,
     players: new Map([[playerId, player]]),
     game: emptyGame(),
     createdAt: now,
@@ -204,6 +235,33 @@ export function setLadyEnabled(room: RoomInternal, hostId: string, enabled: bool
   room.ladyEnabledSetting = enabled;
 }
 
+export function setLadyHolderMode(room: RoomInternal, hostId: string, mode: LadyHolderMode): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能更改湖中女神設定。");
+  }
+  if (mode !== "tail" && mode !== "random") {
+    throw new Error("不支援的湖中女神起始設定。");
+  }
+  room.ladyHolderModeSetting = mode;
+}
+
+export function setLancelotEnabled(room: RoomInternal, hostId: string, enabled: boolean): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能更改蘭斯洛特設定。");
+  }
+  room.lancelotEnabledSetting = enabled;
+}
+
+export function setExcaliburEnabled(room: RoomInternal, hostId: string, enabled: boolean): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能更改王者之劍設定。");
+  }
+  room.excaliburEnabledSetting = enabled;
+}
+
 export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteRoom: boolean } {
   const player = requirePlayer(room, playerId);
 
@@ -271,14 +329,21 @@ export function startGame(room: RoomInternal, playerId: string): void {
     throw new Error("需要 5 到 10 位玩家才能開始。");
   }
 
-  const roleDeck = shuffle(getRoleSet(playerCount));
-  const order = Array.from(room.players.keys());
+  const lancelotEnabled = room.lancelotEnabledSetting && playerCount >= 7;
+  const roleDeck = shuffle(getRoleSet(playerCount, { lancelotEnabled }));
+  const order = shuffle(Array.from(room.players.keys()));
   order.forEach((id, index) => {
     room.players.get(id)!.role = roleDeck[index];
   });
 
-  const leaderIndex = Math.floor(Math.random() * order.length);
-  const ladyHolderId = room.ladyEnabledSetting ? order[(leaderIndex - 1 + order.length) % order.length] : null;
+  const leaderIndex = 0;
+  const ladyHolderId = room.ladyEnabledSetting ? initialLadyHolderId(room, order) : null;
+  const lancelotAllegiances = Object.fromEntries(
+    order
+      .map((id) => room.players.get(id)!)
+      .filter((player) => isLancelotRole(player.role))
+      .map((player) => [player.id, roleSide(player.role!)])
+  );
 
   room.game = {
     ...emptyGame(),
@@ -286,13 +351,17 @@ export function startGame(room: RoomInternal, playerId: string): void {
     playerOrder: order,
     leaderIndex,
     questIndex: 0,
+    excaliburEnabled: room.excaliburEnabledSetting,
     ladyEnabled: room.ladyEnabledSetting,
     ladyHolderId,
-    ladyUsedPlayerIds: ladyHolderId ? [ladyHolderId] : []
+    ladyUsedPlayerIds: ladyHolderId ? [ladyHolderId] : [],
+    lancelotEnabled,
+    lancelotAllegiances,
+    lancelotDeck: lancelotEnabled ? shuffle<LancelotCard>(["switch", "switch", "blank", "blank", "blank"]) : []
   };
 }
 
-export function proposeTeam(room: RoomInternal, playerId: string, teamIds: string[]): void {
+export function proposeTeam(room: RoomInternal, playerId: string, teamIds: string[], excaliburHolderId?: string | null): void {
   assertPhase(room, "team-building");
   assertLeader(room, playerId);
 
@@ -304,6 +373,23 @@ export function proposeTeam(room: RoomInternal, playerId: string, teamIds: strin
 
   for (const id of uniqueTeam) {
     requirePlayer(room, id);
+  }
+
+  if (room.game.excaliburEnabled) {
+    if (!excaliburHolderId) {
+      throw new Error("請指定王者之劍持有者。");
+    }
+    if (!uniqueTeam.includes(excaliburHolderId)) {
+      throw new Error("王者之劍只能交給任務隊員。");
+    }
+    if (excaliburHolderId === playerId) {
+      throw new Error("隊長不能把王者之劍交給自己。");
+    }
+    room.game.excaliburHolderId = excaliburHolderId;
+    room.game.excaliburTargetId = null;
+  } else {
+    room.game.excaliburHolderId = null;
+    room.game.excaliburTargetId = null;
   }
 
   room.game.proposedTeam = uniqueTeam;
@@ -371,13 +457,49 @@ export function castMissionVote(room: RoomInternal, playerId: string, success: b
     throw new Error("你已經提交過任務結果了。");
   }
 
-  const normalizedSuccess = player.role && roleSide(player.role) === "good" ? true : success;
+  const normalizedSuccess = player.role && playerAllegiance(room, player) === "good" ? true : success;
   room.game.missionVotes[playerId] = normalizedSuccess;
 
   if (Object.keys(room.game.missionVotes).length !== room.game.proposedTeam.length) {
     return;
   }
 
+  if (room.game.excaliburEnabled && room.game.excaliburHolderId) {
+    room.game.phase = "excalibur";
+    return;
+  }
+
+  resolveMission(room);
+}
+
+export function useExcalibur(room: RoomInternal, playerId: string, targetId: string | null): void {
+  assertPhase(room, "excalibur");
+  const holder = requirePlayer(room, playerId);
+  if (room.game.excaliburHolderId !== holder.id) {
+    throw new Error("現在不是你持有王者之劍。");
+  }
+
+  if (targetId) {
+    const target = requirePlayer(room, targetId);
+    if (target.id === holder.id) {
+      throw new Error("王者之劍不能更換自己的任務卡。");
+    }
+    if (!room.game.proposedTeam.includes(target.id)) {
+      throw new Error("只能更換任務隊員的任務卡。");
+    }
+    if (room.game.missionVotes[target.id] === undefined) {
+      throw new Error("目標尚未提交任務卡。");
+    }
+    room.game.missionVotes[target.id] = !room.game.missionVotes[target.id];
+    room.game.excaliburTargetId = target.id;
+  } else {
+    room.game.excaliburTargetId = null;
+  }
+
+  resolveMission(room);
+}
+
+function resolveMission(room: RoomInternal): void {
   const failCount = Object.values(room.game.missionVotes).filter((value) => !value).length;
   const failThreshold = currentFailThreshold(room);
   const questSuccess = failCount < failThreshold;
@@ -387,11 +509,16 @@ export function castMissionVote(room: RoomInternal, playerId: string, success: b
     team: [...room.game.proposedTeam],
     success: questSuccess,
     failCount,
-    failThreshold
+    failThreshold,
+    excaliburHolderId: room.game.excaliburEnabled ? room.game.excaliburHolderId : null,
+    excaliburTargetId: room.game.excaliburEnabled ? room.game.excaliburTargetId : null
   });
 
+  maybeDrawLancelotCard(room, room.game.questIndex);
   room.game.missionVotes = {};
   room.game.failedVoteCount = 0;
+  room.game.excaliburHolderId = null;
+  room.game.excaliburTargetId = null;
 
   const successCount = room.game.quests.filter((quest) => quest.success).length;
   const failureCount = room.game.quests.filter((quest) => !quest.success).length;
@@ -403,6 +530,7 @@ export function castMissionVote(room: RoomInternal, playerId: string, success: b
 
   if (successCount >= 3) {
     room.game.phase = "assassination";
+    room.game.assassinationVotes = {};
     room.game.proposedTeam = [];
     return;
   }
@@ -410,7 +538,7 @@ export function castMissionVote(room: RoomInternal, playerId: string, success: b
   moveToNextQuest(room);
 }
 
-export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: string): void {
+export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: string, announcedAllegiance?: Allegiance | null): void {
   assertPhase(room, "lady");
   const holder = requirePlayer(room, playerId);
   const target = requirePlayer(room, targetId);
@@ -428,15 +556,60 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
     throw new Error("目標還沒有身分。");
   }
 
+  const actualAllegiance = playerAllegiance(room, target);
+  const pending = room.game.ladyPendingResult;
+  if (pending) {
+    if (pending.fromId !== holder.id || pending.targetId !== target.id) {
+      throw new Error("請先完成目前這次湖中女神宣告。");
+    }
+    if (!announcedAllegiance) {
+      return;
+    }
+
+    finalizeLadyOfLake(room, holder, target, pending.allegiance, announcedAllegiance);
+    return;
+  }
+
   room.game.ladyResults[playerId] = {
     targetId: target.id,
-    allegiance: roleSide(target.role)
+    allegiance: actualAllegiance
+  };
+
+  if (!holder.isBot && !announcedAllegiance) {
+    room.game.ladyPendingResult = {
+      fromId: holder.id,
+      targetId: target.id,
+      allegiance: actualAllegiance
+    };
+    return;
+  }
+
+  finalizeLadyOfLake(
+    room,
+    holder,
+    target,
+    actualAllegiance,
+    announcedAllegiance || chooseBotLadyAnnouncement(room, holder, target, actualAllegiance)
+  );
+}
+
+function finalizeLadyOfLake(
+  room: RoomInternal,
+  holder: PlayerInternal,
+  target: PlayerInternal,
+  actualAllegiance: Allegiance,
+  announcedAllegiance: Allegiance
+): void {
+  room.game.ladyResults[holder.id] = {
+    targetId: target.id,
+    allegiance: actualAllegiance
   };
   room.game.ladyInspections.push({
     fromId: holder.id,
     targetId: target.id,
-    announcedAllegiance: holder.isBot ? chooseBotLadyAnnouncement(room, holder, target, roleSide(target.role)) : null
+    announcedAllegiance
   });
+  room.game.ladyPendingResult = null;
   room.game.ladyHolderId = target.id;
   room.game.ladyUsedPlayerIds.push(target.id);
   room.game.phase = "team-building";
@@ -444,17 +617,25 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
 
 export function assassinate(room: RoomInternal, playerId: string, targetId: string): void {
   assertPhase(room, "assassination");
-  const assassin = requirePlayer(room, playerId);
+  const voter = requirePlayer(room, playerId);
   const target = requirePlayer(room, targetId);
-  if (assassin.role !== "assassin") {
-    throw new Error("只有刺客可以選擇刺殺目標。");
+  if (playerAllegiance(room, voter) !== "evil") {
+    throw new Error("只有邪惡陣營可以投票猜梅林。");
   }
-  if (target.role === "assassin") {
-    throw new Error("不能刺殺自己。");
+  if (target.id === voter.id) {
+    throw new Error("不能投給自己。");
   }
 
-  room.game.assassinTargetId = targetId;
-  if (target.role === "merlin") {
+  room.game.assassinationVotes[voter.id] = targetId;
+  const voters = assassinationVoters(room);
+  if (Object.keys(room.game.assassinationVotes).length < voters.length) {
+    return;
+  }
+
+  const chosenTargetId = resolveAssassinationVote(room);
+  const chosenTarget = requirePlayer(room, chosenTargetId);
+  room.game.assassinTargetId = chosenTargetId;
+  if (chosenTarget.role === "merlin") {
     finishGame(room, "evil", "刺客命中梅林，邪惡陣營逆轉勝。");
   } else {
     finishGame(room, "good", "刺客沒有命中梅林，亞瑟陣營獲勝。");
@@ -482,6 +663,9 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
   return {
     roomCode: room.code,
     ladyEnabledSetting: room.ladyEnabledSetting,
+    ladyHolderModeSetting: room.ladyHolderModeSetting,
+    lancelotEnabledSetting: room.lancelotEnabledSetting,
+    excaliburEnabledSetting: room.excaliburEnabledSetting,
     idleWarningAt: room.lastActivityAt + IDLE_WARNING_MS,
     idleTimeoutAt: room.lastActivityAt + IDLE_TIMEOUT_MS,
     you: viewer ? toPublicPlayer(viewer) : null,
@@ -499,18 +683,30 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
       missionVotesSubmitted: Object.keys(game.missionVotes),
       quests: [...game.quests],
       voteHistory: [...game.voteHistory],
+      botOpinions: [...game.botOpinions],
       winner: game.winner,
       winReason: game.winReason,
       assassinId: assassin?.id || null,
       assassinTargetId: game.assassinTargetId,
+      assassinationVotesSubmitted: Object.keys(game.assassinationVotes),
+      assassinationVoteCount: assassinationVoters(room).length,
+      excaliburEnabled: game.excaliburEnabled,
+      excaliburHolderId: game.excaliburHolderId,
+      excaliburTargetId: game.excaliburTargetId,
+      excaliburVotes: viewer?.id === game.excaliburHolderId ? { ...game.missionVotes } : null,
       ladyEnabled: game.ladyEnabled,
       ladyHolderId: game.ladyHolderId,
       ladyUsedPlayerIds: [...game.ladyUsedPlayerIds],
-      ladyInspections: [...game.ladyInspections]
+      ladyInspections: [...game.ladyInspections],
+      lancelotEnabled: game.lancelotEnabled,
+      lancelotDraws: [...game.lancelotDraws],
+      lancelotDeckRemaining: game.lancelotDeck.length
     },
     yourRole: viewer?.role || null,
+    yourAllegiance: viewer?.role ? playerAllegiance(room, viewer) : null,
     roleKnowledge: viewer?.role ? buildKnowledge(room, viewer.id, viewer.role) : [],
     ladyResult: viewer ? game.ladyResults[viewer.id] || null : null,
+    ladyPendingResult: viewer && game.ladyPendingResult?.fromId === viewer.id ? game.ladyPendingResult : null,
     revealedRoles
   };
 }
@@ -565,7 +761,7 @@ function buildKnowledge(room: RoomInternal, viewerId: string, role: RoleId): Rol
       {
         label: "你知道的邪惡同伴",
         playerIds: players
-          .filter((player) => player.id !== viewerId && player.role && roleSide(player.role) === "evil" && player.role !== "oberon")
+          .filter((player) => player.id !== viewerId && player.role && playerAllegiance(room, player) === "evil" && player.role !== "oberon")
           .map((player) => player.id)
       }
     ];
@@ -578,6 +774,40 @@ function finishGame(room: RoomInternal, winner: "good" | "evil", reason: string)
   room.game.phase = "finished";
   room.game.winner = winner;
   room.game.winReason = reason;
+}
+
+function addBotOpinion(room: RoomInternal, player: PlayerInternal, phase: BotOpinion["phase"], message: string): void {
+  room.game.botOpinions.push({
+    id: room.game.botOpinions.length + 1,
+    playerId: player.id,
+    phase,
+    message
+  });
+  if (room.game.botOpinions.length > 12) {
+    room.game.botOpinions = room.game.botOpinions.slice(-12);
+  }
+}
+
+function maybeDrawLancelotCard(room: RoomInternal, completedQuestIndex: number): void {
+  if (!room.game.lancelotEnabled || completedQuestIndex < 1 || room.game.lancelotDeck.length === 0) {
+    return;
+  }
+
+  const card = room.game.lancelotDeck.shift()!;
+  const switched = card === "switch";
+  if (switched) {
+    for (const player of orderedPlayers(room)) {
+      if (isLancelotRole(player.role)) {
+        room.game.lancelotAllegiances[player.id] = playerAllegiance(room, player) === "good" ? "evil" : "good";
+      }
+    }
+  }
+
+  room.game.lancelotDraws.push({
+    questIndex: completedQuestIndex,
+    card,
+    switched
+  });
 }
 
 function moveToNextQuest(room: RoomInternal): void {
@@ -604,12 +834,23 @@ function shouldUseLadyOfLake(room: RoomInternal, completedQuestIndex: number): b
   );
 }
 
+function initialLadyHolderId(room: RoomInternal, order: string[]): string | null {
+  if (order.length === 0) {
+    return null;
+  }
+  if (room.ladyHolderModeSetting === "random") {
+    return order[Math.floor(Math.random() * order.length)];
+  }
+  return order[order.length - 1];
+}
+
 function runOneBotAction(room: RoomInternal): boolean {
   if (room.game.phase === "team-building") {
     const leaderId = currentLeaderId(room);
     const leader = leaderId ? room.players.get(leaderId) : null;
     if (leader?.isBot) {
-      proposeTeam(room, leader.id, chooseBotTeam(room, leader));
+      const team = chooseBotTeam(room, leader);
+      proposeTeam(room, leader.id, team, room.game.excaliburEnabled ? chooseBotExcaliburHolder(room, leader, team) : null);
       return true;
     }
   }
@@ -617,7 +858,12 @@ function runOneBotAction(room: RoomInternal): boolean {
   if (room.game.phase === "team-vote") {
     const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
     if (bot) {
-      castTeamVote(room, bot.id, chooseBotTeamVote(room, bot));
+      const approve = chooseBotTeamVote(room, bot);
+      const opinion = approve ? null : botTeamVoteOpinion(room, bot);
+      castTeamVote(room, bot.id, approve);
+      if (!approve) {
+        addBotOpinion(room, bot, "team-vote", opinion!);
+      }
       return true;
     }
   }
@@ -632,22 +878,40 @@ function runOneBotAction(room: RoomInternal): boolean {
     }
   }
 
+  if (room.game.phase === "excalibur") {
+    const holder = room.game.excaliburHolderId ? room.players.get(room.game.excaliburHolderId) : null;
+    if (holder?.isBot) {
+      const targetId = chooseBotExcaliburTarget(room, holder);
+      useExcalibur(room, holder.id, targetId);
+      addBotOpinion(
+        room,
+        holder,
+        "excalibur",
+        targetId ? `我用王者之劍更換 ${room.players.get(targetId)?.name || "一名隊員"} 的任務卡。` : "我不使用王者之劍。"
+      );
+      return true;
+    }
+  }
+
   if (room.game.phase === "lady") {
     const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
     if (holder?.isBot) {
-      useLadyOfLake(room, holder.id, chooseBotLadyTarget(room, holder));
+      const targetId = chooseBotLadyTarget(room, holder);
+      const target = room.players.get(targetId)!;
+      const announcement = chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      useLadyOfLake(room, holder.id, targetId, announcement);
+      addBotOpinion(room, holder, "lady", `我查看 ${target.name}，我宣告他是${announcement === "good" ? "好人" : "邪惡"}陣營。`);
       return true;
     }
   }
 
   if (room.game.phase === "assassination") {
-    const assassin = Array.from(room.players.values()).find((player) => player.role === "assassin");
-    if (assassin?.isBot) {
-      const merlin = Array.from(room.players.values()).find((player) => player.role === "merlin");
-      if (merlin) {
-        assassinate(room, assassin.id, merlin.id);
-        return true;
-      }
+    const bot = assassinationVoters(room).find((player) => player.isBot && room.game.assassinationVotes[player.id] === undefined);
+    if (bot) {
+      const targetId = chooseBotAssassinationTarget(room, bot);
+      addBotOpinion(room, bot, "assassination", `我猜 ${room.players.get(targetId)?.name || "這名玩家"} 是梅林。`);
+      assassinate(room, bot.id, targetId);
+      return true;
     }
   }
 
@@ -663,7 +927,7 @@ function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
     }
   };
 
-  if (chance(bot.role && roleSide(bot.role) === "evil" ? 0.72 : 0.88)) {
+  if (chance(bot.role && playerAllegiance(room, bot) === "evil" ? 0.72 : 0.88)) {
     add(bot);
   }
 
@@ -685,11 +949,11 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const critical = isCriticalMoment(room);
   const opening = isOpeningRound(room);
 
-  if (room.game.failedVoteCount >= 4 && (!bot.role || roleSide(bot.role) === "good")) {
+  if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
     return chance(knownEvilCount > 0 || condemnedOnTeam ? 0.5 : 0.92);
   }
 
-  if (bot.role && roleSide(bot.role) === "evil") {
+  if (bot.role && playerAllegiance(room, bot) === "evil") {
     const evilOnTeam = team.some((player) => knownEvil.has(player.id));
     if (evilOnTeam) {
       return chance(selfOnTeam ? 0.92 : critical ? 0.86 : 0.78);
@@ -745,8 +1009,25 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   return chance(selfOnTeam || trustedGoodOnTeam ? 0.9 : opening ? 0.82 : 0.74);
 }
 
+function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal): string {
+  const teamNames = room.game.proposedTeam.map((id) => room.players.get(id)?.name || "未知").join("、");
+  const knownEvil = knownEvilIds(room, bot);
+  const condemned = privateLadyEvilIds(room, bot);
+  const hasKnownIssue = room.game.proposedTeam.some((id) => knownEvil.has(id) || condemned.has(id));
+  if (hasKnownIssue && playerAllegiance(room, bot) === "good") {
+    return `我反對這隊，${teamNames} 裡有我不信任的人。`;
+  }
+  if (playerAllegiance(room, bot) === "evil") {
+    return isCriticalMoment(room) ? `這隊對邪惡方不夠有利，我想再換一組。` : `我先反對，讓隊伍資訊多一點。`;
+  }
+  if (room.game.failedVoteCount >= 3) {
+    return `否決快到危險線，但這隊我還是不放心。`;
+  }
+  return `我反對這隊，想看隊長換更乾淨的組合。`;
+}
+
 function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean {
-  if (!bot.role || roleSide(bot.role) === "good") {
+  if (!bot.role || playerAllegiance(room, bot) === "good") {
     return true;
   }
   const currentFailCount = Object.values(room.game.missionVotes).filter((value) => !value).length;
@@ -762,12 +1043,82 @@ function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean 
   return !chance(Math.min(0.97, Math.max(0.45, baseFailChance + pressure + earlyRestraint)));
 }
 
+function chooseBotExcaliburHolder(room: RoomInternal, bot: PlayerInternal, teamIds: string[]): string | null {
+  const candidates = teamIds
+    .map((id) => room.players.get(id))
+    .filter((player): player is PlayerInternal => Boolean(player && player.id !== bot.id));
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (bot.role && playerAllegiance(room, bot) === "evil") {
+    const evilCandidates = candidates.filter((player) => playerAllegiance(room, player) === "evil" && player.role !== "oberon");
+    if (evilCandidates.length > 0) {
+      return evilCandidates[Math.floor(Math.random() * evilCandidates.length)].id;
+    }
+    return [...candidates].sort((first, second) => botSuspicionScore(room, bot, first) - botSuspicionScore(room, bot, second))[0].id;
+  }
+
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+  return [...candidates].sort((first, second) => {
+    const firstScore = (privateGood.has(first.id) ? -2 : 0) + (privateEvil.has(first.id) ? 4 : 0) + botSuspicionScore(room, bot, first);
+    const secondScore = (privateGood.has(second.id) ? -2 : 0) + (privateEvil.has(second.id) ? 4 : 0) + botSuspicionScore(room, bot, second);
+    return firstScore - secondScore;
+  })[0].id;
+}
+
+function chooseBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): string | null {
+  const targets = room.game.proposedTeam
+    .map((id) => room.players.get(id))
+    .filter((player): player is PlayerInternal => Boolean(player && player.id !== bot.id && room.game.missionVotes[player.id] !== undefined));
+
+  if (targets.length === 0) {
+    return null;
+  }
+
+  if (bot.role && playerAllegiance(room, bot) === "evil") {
+    const successTargets = targets.filter((player) => room.game.missionVotes[player.id]);
+    const goodSuccessTargets = successTargets.filter((player) => playerAllegiance(room, player) === "good");
+    const pool = goodSuccessTargets.length > 0 ? goodSuccessTargets : successTargets;
+    if (pool.length === 0) {
+      return null;
+    }
+    return chance(isCriticalMoment(room) ? 0.94 : 0.78) ? pool[Math.floor(Math.random() * pool.length)].id : null;
+  }
+
+  const failedTargets = targets.filter((player) => room.game.missionVotes[player.id] === false);
+  if (failedTargets.length > 0) {
+    return [...failedTargets].sort((first, second) => botSuspicionScore(room, bot, second) - botSuspicionScore(room, bot, first))[0].id;
+  }
+
+  return null;
+}
+
+function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): string {
+  const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id);
+  const scored = candidates.map((player, index) => {
+    let score = 0;
+    score += assassinationReadScore(room, player);
+    score += (Math.random() - 0.5) * 1.4;
+    if (player.role === "merlin") {
+      score += 0.65;
+    }
+    if (player.role && playerAllegiance(room, player) === "evil") {
+      score -= bot.role === "oberon" ? 0.4 : 3.2;
+    }
+    return { player, score, index };
+  });
+  scored.sort((first, second) => second.score - first.score || first.index - second.index);
+  return scored[0].player.id;
+}
+
 function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
   const used = new Set(room.game.ladyUsedPlayerIds);
   const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id && !used.has(player.id));
 
-  if (bot.role && roleSide(bot.role) === "evil") {
-    const goodTargets = candidates.filter((player) => player.role && roleSide(player.role) === "good");
+  if (bot.role && playerAllegiance(room, bot) === "evil") {
+    const goodTargets = candidates.filter((player) => player.role && playerAllegiance(room, player) === "good");
     const pool = goodTargets.length > 0 ? goodTargets : candidates;
     return pool[Math.floor(Math.random() * pool.length)].id;
   }
@@ -783,10 +1134,10 @@ function chooseBotLadyAnnouncement(
   target: PlayerInternal,
   actualAllegiance: Allegiance
 ): Allegiance {
-  if (!bot.role || roleSide(bot.role) === "good") {
+  if (!bot.role || playerAllegiance(room, bot) === "good") {
     return actualAllegiance;
   }
-  if (target.role && roleSide(target.role) === "evil") {
+  if (target.role && playerAllegiance(room, target) === "evil") {
     return chance(0.94) ? "good" : "evil";
   }
   return chance(isCriticalMoment(room) ? 0.88 : 0.74) ? "evil" : "good";
@@ -805,10 +1156,10 @@ function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerI
       const suspicion = botSuspicionScore(room, bot, player);
 
       if (player.id === bot.id) {
-        score += bot.role && roleSide(bot.role) === "evil" ? 2.2 : 2.8;
+        score += bot.role && playerAllegiance(room, bot) === "evil" ? 2.2 : 2.8;
       }
 
-      if (bot.role && roleSide(bot.role) === "evil") {
+      if (bot.role && playerAllegiance(room, bot) === "evil") {
         if (knownEvil.has(player.id)) {
           score += player.id === bot.id ? 1.4 : critical ? 2.2 : 1.2;
         } else {
@@ -923,7 +1274,7 @@ function chance(probability: number): boolean {
 }
 
 function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
-  if (bot.role && roleSide(bot.role) === "good" && player.id === bot.id) {
+  if (bot.role && playerAllegiance(room, bot) === "good" && player.id === bot.id) {
     return 0;
   }
 
@@ -932,10 +1283,10 @@ function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: Play
   const privateEvil = privateLadyEvilIds(room, bot);
 
   if (privateGood.has(player.id)) {
-    score -= bot.role && roleSide(bot.role) === "good" ? 2.2 : 0.5;
+    score -= bot.role && playerAllegiance(room, bot) === "good" ? 2.2 : 0.5;
   }
   if (privateEvil.has(player.id)) {
-    score += bot.role && roleSide(bot.role) === "good" ? 5.0 : 0.6;
+    score += bot.role && playerAllegiance(room, bot) === "good" ? 5.0 : 0.6;
   }
 
   if (bot.role === "percival") {
@@ -985,13 +1336,81 @@ function publicLadyClaimSuspicion(room: RoomInternal, bot: PlayerInternal, playe
   return score;
 }
 
+function assassinationReadScore(room: RoomInternal, player: PlayerInternal): number {
+  let score = 0;
+  for (const vote of room.game.voteHistory) {
+    const teamHasKnownEvil = vote.team.some((id) => {
+      const teammate = room.players.get(id);
+      return teammate?.role && playerAllegiance(room, teammate) === "evil";
+    });
+    if (teamHasKnownEvil && vote.rejections.includes(player.id)) {
+      score += vote.approved ? 0.55 : 0.9;
+    }
+    if (!teamHasKnownEvil && vote.approvals.includes(player.id)) {
+      score += 0.25;
+    }
+  }
+
+  for (const quest of room.game.quests) {
+    if (quest.success && quest.team.includes(player.id)) {
+      score += 0.4;
+    }
+    if (!quest.success && quest.team.includes(player.id)) {
+      score -= 0.35;
+    }
+  }
+
+  for (const inspection of room.game.ladyInspections) {
+    if (inspection.targetId === player.id && inspection.announcedAllegiance === "good") {
+      score += 0.35;
+    }
+    if (inspection.targetId === player.id && inspection.announcedAllegiance === "evil") {
+      score -= 0.45;
+    }
+  }
+
+  return score;
+}
+
+function assassinationVoters(room: RoomInternal): PlayerInternal[] {
+  return orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "evil");
+}
+
+function resolveAssassinationVote(room: RoomInternal): string {
+  const tally = new Map<string, number>();
+  for (const targetId of Object.values(room.game.assassinationVotes)) {
+    tally.set(targetId, (tally.get(targetId) || 0) + 1);
+  }
+  const assassin = orderedPlayers(room).find((player) => player.role === "assassin");
+  const assassinVote = assassin ? room.game.assassinationVotes[assassin.id] : null;
+  const order = new Map(room.game.playerOrder.map((id, index) => [id, index]));
+
+  return [...tally.entries()]
+    .sort((first, second) => {
+      const voteDiff = second[1] - first[1];
+      if (voteDiff !== 0) {
+        return voteDiff;
+      }
+      if (assassinVote) {
+        if (first[0] === assassinVote) {
+          return -1;
+        }
+        if (second[0] === assassinVote) {
+          return 1;
+        }
+      }
+      return (order.get(first[0]) ?? 0) - (order.get(second[0]) ?? 0);
+    })[0][0];
+}
+
 function knownEvilPlayers(room: RoomInternal, bot: PlayerInternal): PlayerInternal[] {
   if (!bot.role) {
     return [];
   }
-  if (roleSide(bot.role) === "evil") {
+  if (playerAllegiance(room, bot) === "evil") {
     return orderedPlayers(room).filter(
-      (player) => player.role && roleSide(player.role) === "evil" && player.role !== "oberon" && (bot.role !== "oberon" || player.id === bot.id)
+      (player) =>
+        player.role && playerAllegiance(room, player) === "evil" && player.role !== "oberon" && (bot.role !== "oberon" || player.id === bot.id)
     );
   }
   if (bot.role === "merlin") {
@@ -1031,6 +1450,20 @@ function toPublicPlayer(player: PlayerInternal): PlayerPublic {
     isHost: player.isHost,
     isBot: player.isBot
   };
+}
+
+function isLancelotRole(role: RoleId | null): role is "lancelotGood" | "lancelotEvil" {
+  return role === "lancelotGood" || role === "lancelotEvil";
+}
+
+function playerAllegiance(room: RoomInternal, player: PlayerInternal): Allegiance {
+  if (!player.role) {
+    return "good";
+  }
+  if (isLancelotRole(player.role)) {
+    return room.game.lancelotAllegiances[player.id] || roleSide(player.role);
+  }
+  return roleSide(player.role);
 }
 
 function hasHumanPlayers(room: RoomInternal): boolean {

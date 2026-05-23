@@ -12,6 +12,7 @@ import {
   LogOut,
   Plus,
   RotateCcw,
+  Shield,
   Sparkles,
   Swords,
   Target,
@@ -23,15 +24,18 @@ import {
   X
 } from "lucide-react";
 import { socket } from "./socket";
-import type { LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
+import type { LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
 import roleCardsUrl from "./assets/role-cards.png";
 import councilHallUrl from "./assets/council-hall.png";
+import lancelotGoodUrl from "./assets/lancelot-good.png";
+import lancelotEvilUrl from "./assets/lancelot-evil.png";
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   ROLE_DEFINITIONS,
   getRoleSet,
   roleSide,
+  type Allegiance,
   type RoleId
 } from "../shared/roles";
 
@@ -44,7 +48,9 @@ const phaseLabel: Record<RoomView["game"]["phase"], string> = {
   "team-building": "組隊",
   "team-vote": "表決",
   mission: "任務",
+  excalibur: "王者之劍",
   lady: "湖中女神",
+  lancelot: "忠誠牌",
   assassination: "刺殺",
   finished: "結算"
 };
@@ -53,10 +59,12 @@ const roleTone: Record<RoleId, string> = {
   merlin: "role-good",
   percival: "role-good",
   loyal: "role-good",
+  lancelotGood: "role-good",
   assassin: "role-evil",
   morgana: "role-evil",
   mordred: "role-evil",
   oberon: "role-evil",
+  lancelotEvil: "role-evil",
   minion: "role-evil"
 };
 
@@ -64,12 +72,27 @@ const roleMark: Record<RoleId, string> = {
   merlin: "✦",
   percival: "◇",
   loyal: "♜",
+  lancelotGood: "◆",
   assassin: "†",
   morgana: "☾",
   mordred: "♛",
   oberon: "◌",
+  lancelotEvil: "◆",
   minion: "◆"
 };
+
+const fullRoleGallery: RoleId[] = [
+  "merlin",
+  "percival",
+  "loyal",
+  "lancelotGood",
+  "assassin",
+  "morgana",
+  "mordred",
+  "oberon",
+  "lancelotEvil",
+  "minion"
+];
 
 const questTeamSizes: Record<number, number[]> = {
   5: [2, 3, 2, 3, 3],
@@ -250,7 +273,14 @@ export function App() {
   return (
     <main
       className="app-shell"
-      style={{ "--card-sheet": `url(${roleCardsUrl})`, "--hall-bg": `url(${councilHallUrl})` } as CSSProperties}
+      style={
+        {
+          "--card-sheet": `url(${roleCardsUrl})`,
+          "--hall-bg": `url(${councilHallUrl})`,
+          "--lancelot-good": `url(${lancelotGoodUrl})`,
+          "--lancelot-evil": `url(${lancelotEvilUrl})`
+        } as CSSProperties
+      }
     >
       <section className="hero-band">
         <div>
@@ -360,6 +390,36 @@ function LobbyRoomList({ rooms }: { rooms: LobbyRoomSummary[] }) {
 
 function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onLeave: () => void }) {
   const isHost = room.you?.isHost ?? false;
+  const [teamDraft, setTeamDraft] = useState<string[]>([]);
+  const [excaliburHolderId, setExcaliburHolderId] = useState<string | null>(null);
+  const isTeamDrafting = room.game.phase === "team-building" && room.you?.id === room.game.leaderId;
+  const excaliburCandidates = teamDraft.filter((id) => id !== room.game.leaderId);
+
+  useEffect(() => {
+    setTeamDraft([]);
+    setExcaliburHolderId(null);
+  }, [room.roomCode, room.game.phase, room.game.questIndex, room.game.leaderId, room.game.teamSize]);
+
+  useEffect(() => {
+    if (excaliburHolderId && !excaliburCandidates.includes(excaliburHolderId)) {
+      setExcaliburHolderId(null);
+    }
+  }, [excaliburCandidates, excaliburHolderId]);
+
+  function toggleTeamDraft(playerId: string) {
+    if (!isTeamDrafting) {
+      return;
+    }
+    setTeamDraft((current) => {
+      if (current.includes(playerId)) {
+        return current.filter((id) => id !== playerId);
+      }
+      if (current.length >= room.game.teamSize) {
+        return current;
+      }
+      return [...current, playerId];
+    });
+  }
 
   return (
     <section className="room-layout">
@@ -390,20 +450,27 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
 
       <div className="game-grid">
         <aside className="side-panel">
-          <PlayerList room={room} />
+          <PlayerList room={room} teamDraft={teamDraft} onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined} />
           <HostControls room={room} />
         </aside>
 
         <section className="play-panel">
           <RoleCard room={room} />
           <MissionBoard room={room} />
-          <PhasePanel room={room} />
+          <PhasePanel
+            room={room}
+            teamDraft={teamDraft}
+            setTeamDraft={setTeamDraft}
+            excaliburHolderId={excaliburHolderId}
+            setExcaliburHolderId={setExcaliburHolderId}
+          />
         </section>
 
         <aside className="side-panel">
-          {room.game.phase === "lobby" ? <RolePreview /> : null}
           <VoteHistory room={room} />
           <LadyHistory room={room} />
+          <BotOpinions room={room} />
+          <RolePreview room={room} compact={room.game.phase !== "lobby"} />
           {isHost && room.game.phase === "finished" ? <ResetControl /> : null}
         </aside>
       </div>
@@ -430,7 +497,15 @@ function IdleStatus({ room }: { room: RoomView }) {
   );
 }
 
-function PlayerList({ room }: { room: RoomView }) {
+function PlayerList({
+  room,
+  teamDraft,
+  onToggleTeamDraft
+}: {
+  room: RoomView;
+  teamDraft?: string[];
+  onToggleTeamDraft?: (playerId: string) => void;
+}) {
   const leaderId = room.game.leaderId;
   const canRemoveBots = room.you?.isHost && room.game.phase === "lobby";
   return (
@@ -440,27 +515,83 @@ function PlayerList({ room }: { room: RoomView }) {
         玩家 {room.players.length}/{MAX_PLAYERS}
       </div>
       <div className="seat-grid">
-        {room.players.map((player) => (
-          <div className={playerSeatClass(room, player)} key={player.id}>
-            <div className="seat-card-face">
-              <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
-              <div className="seat-name">{player.name}</div>
-              <div className="seat-tags">
-                {player.isHost ? <span className="seat-tag host">房主</span> : null}
-                {player.isBot ? <span className="seat-tag bot">電腦</span> : null}
-                {leaderId === player.id ? <span className="seat-tag leader">隊長</span> : null}
-                {room.you?.id === player.id ? <span className="seat-tag you">你</span> : null}
+        {room.players.map((player) => {
+          const badge = intelBadge(room, player.id);
+          const isLeader = leaderId === player.id;
+          const isDraftMember = teamDraft?.includes(player.id) ?? false;
+          const isQuestMember = room.game.proposedTeam.includes(player.id) || isDraftMember;
+          const isLadyHolder = room.game.ladyEnabled && room.game.ladyHolderId === player.id;
+          const orderIndex = seatOrderIndex(room, player.id);
+          const cardClass = playerSeatClass(room, player, isDraftMember, Boolean(onToggleTeamDraft));
+          return (
+            <div
+              className={cardClass}
+              key={player.id}
+              role={onToggleTeamDraft ? "button" : undefined}
+              tabIndex={onToggleTeamDraft ? 0 : undefined}
+              aria-pressed={onToggleTeamDraft ? isDraftMember : undefined}
+              title={onToggleTeamDraft ? "點卡片選入或移出任務隊伍" : undefined}
+              onClick={() => onToggleTeamDraft?.(player.id)}
+              onKeyDown={(event) => {
+                if (!onToggleTeamDraft || (event.key !== "Enter" && event.key !== " ")) {
+                  return;
+                }
+                event.preventDefault();
+                onToggleTeamDraft(player.id);
+              }}
+            >
+              <div className="seat-corner-marks">
+                {isLeader ? (
+                  <span className="seat-corner-mark leader-mark" title="隊長" aria-label="隊長">
+                    <Crown size={18} />
+                  </span>
+                ) : null}
+                {isQuestMember ? (
+                  <span className="seat-corner-mark quest-mark" title="任務隊員" aria-label="任務隊員">
+                    <Shield size={18} />
+                  </span>
+                ) : null}
               </div>
-              {intelBadge(room, player.id) ? <div className="intel-badge">{intelBadge(room, player.id)}</div> : null}
-              {revealedRoleName(room, player.id) ? <div className="role-name-badge">{revealedRoleName(room, player.id)}</div> : null}
+              <div className="seat-bottom-marks">
+                {isLadyHolder ? (
+                  <span className="seat-bottom-mark lady-holder-mark" title="湖中女神持有者" aria-label="湖中女神持有者">
+                    <Waves size={15} />
+                    女神
+                  </span>
+                ) : null}
+                {orderIndex !== null ? (
+                  <span className="seat-bottom-mark seat-order-mark" title={`隊長順位 ${orderIndex + 1}`} aria-label={`隊長順位 ${orderIndex + 1}`}>
+                    {orderIndex + 1}
+                  </span>
+                ) : null}
+              </div>
+              <div className="seat-card-face">
+                <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
+                <div className="seat-name">{player.name}</div>
+                <div className="seat-tags">
+                  {player.isHost ? <span className="seat-tag host">房主</span> : null}
+                  {player.isBot ? <span className="seat-tag bot">電腦</span> : null}
+                  {leaderId === player.id ? <span className="seat-tag leader">隊長</span> : null}
+                  {room.you?.id === player.id ? <span className="seat-tag you">你</span> : null}
+                </div>
+                {badge ? <div className={`intel-badge intel-${badge.tone}`}>{badge.text}</div> : null}
+                {revealedRoleName(room, player.id) ? <div className="role-name-badge">{revealedRoleName(room, player.id)}</div> : null}
+              </div>
+              {canRemoveBots && player.isBot ? (
+                <button
+                  className="mini-icon-button"
+                  aria-label={`移除 ${player.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    socket.emit("removeBot", player.id);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              ) : null}
             </div>
-            {canRemoveBots && player.isBot ? (
-              <button className="mini-icon-button" aria-label={`移除 ${player.name}`} onClick={() => socket.emit("removeBot", player.id)}>
-                <Trash2 size={14} />
-              </button>
-            ) : null}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -483,6 +614,44 @@ function HostControls({ room }: { room: RoomView }) {
         <span className="toggle-label">
           <Waves size={17} />
           湖中女神
+        </span>
+      </label>
+      <label className="setting-select-row">
+        <span className="toggle-label">
+          <Waves size={17} />
+          女神起始
+        </span>
+        <select
+          value={room.ladyHolderModeSetting}
+          disabled={!room.ladyEnabledSetting}
+          onChange={(event) => socket.emit("setLadyHolderMode", event.currentTarget.value as LadyHolderMode)}
+        >
+          <option value="tail">最尾端玩家</option>
+          <option value="random">隨機玩家</option>
+        </select>
+      </label>
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={room.lancelotEnabledSetting}
+          onChange={(event) => socket.emit("setLancelotEnabled", event.currentTarget.checked)}
+        />
+        <span className="toggle-track" />
+        <span className="toggle-label">
+          <RotateCcw size={17} />
+          蘭斯洛特
+        </span>
+      </label>
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={room.excaliburEnabledSetting}
+          onChange={(event) => socket.emit("setExcaliburEnabled", event.currentTarget.checked)}
+        />
+        <span className="toggle-track" />
+        <span className="toggle-label">
+          <Swords size={17} />
+          王者之劍
         </span>
       </label>
       <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
@@ -511,6 +680,7 @@ function MissionBoard({ room }: { room: RoomView }) {
   const successCount = room.game.quests.filter((quest) => quest.success).length;
   const failureCount = room.game.quests.filter((quest) => !quest.success).length;
   const ladyIsActiveOrPlanned = room.game.phase === "lobby" ? room.ladyEnabledSetting : room.game.ladyEnabled;
+  const latestLancelotDraw = room.game.lancelotDraws[room.game.lancelotDraws.length - 1];
   return (
     <div className="mission-board">
       <div className="board-top">
@@ -558,6 +728,14 @@ function MissionBoard({ room }: { room: RoomView }) {
           <span>湖中女神未啟用</span>
         )}
       </div>
+      {room.game.lancelotEnabled ? (
+        <div className={latestLancelotDraw?.switched ? "lancelot-event switched" : "lancelot-event"}>
+          <RotateCcw size={16} />
+          {latestLancelotDraw
+            ? `任務 ${latestLancelotDraw.questIndex + 1} 後抽到${latestLancelotDraw.switched ? "忠誠變化" : "空白"}，剩 ${room.game.lancelotDeckRemaining} 張`
+            : "蘭斯洛特忠誠牌庫待命"}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -580,9 +758,11 @@ function RoleCard({ room }: { room: RoomView }) {
   }
 
   const role = ROLE_DEFINITIONS[room.yourRole];
-  const side = role.allegiance === "good" ? "亞瑟陣營" : "邪惡陣營";
+  const currentSide = room.yourAllegiance || role.allegiance;
+  const side = currentSide === "good" ? "亞瑟陣營" : "邪惡陣營";
+  const switchedSide = currentSide !== role.allegiance;
   return (
-    <div className={`identity-panel ${role.allegiance === "good" ? "identity-good" : "identity-evil"}`}>
+    <div className={`identity-panel ${currentSide === "good" ? "identity-good" : "identity-evil"}`}>
       <div className={`role-portrait card-art card-art-${room.yourRole}`}>
         <span>{roleMark[room.yourRole]}</span>
       </div>
@@ -590,6 +770,13 @@ function RoleCard({ room }: { room: RoomView }) {
         <span>{side}</span>
         <h2>{role.name}</h2>
         <p>{role.summary}</p>
+        {switchedSide ? (
+          <div className="knowledge-line lancelot-note">
+            <RotateCcw size={16} />
+            <strong>目前忠誠</strong>
+            <span>蘭斯洛特忠誠牌已讓你改為{currentSide === "good" ? "亞瑟陣營" : "邪惡陣營"}</span>
+          </div>
+        ) : null}
         {room.roleKnowledge.map((knowledge) => (
           <div className="knowledge-line" key={knowledge.label}>
             <Eye size={16} />
@@ -611,18 +798,32 @@ function RoleCard({ room }: { room: RoomView }) {
   );
 }
 
-function PhasePanel({ room }: { room: RoomView }) {
+function PhasePanel({
+  room,
+  teamDraft,
+  excaliburHolderId,
+  setExcaliburHolderId
+}: {
+  room: RoomView;
+  teamDraft: string[];
+  setTeamDraft: (value: string[]) => void;
+  excaliburHolderId: string | null;
+  setExcaliburHolderId: (value: string | null) => void;
+}) {
   if (room.game.phase === "lobby") {
     return <LobbyPanel room={room} />;
   }
   if (room.game.phase === "team-building") {
-    return <TeamBuilder room={room} />;
+    return <TeamBuilder room={room} selected={teamDraft} excaliburHolderId={excaliburHolderId} setExcaliburHolderId={setExcaliburHolderId} />;
   }
   if (room.game.phase === "team-vote") {
     return <TeamVote room={room} />;
   }
   if (room.game.phase === "mission") {
     return <MissionVote room={room} />;
+  }
+  if (room.game.phase === "excalibur") {
+    return <ExcaliburPanel room={room} />;
   }
   if (room.game.phase === "lady") {
     return <LadyOfLake room={room} />;
@@ -637,20 +838,36 @@ function LadyOfLake({ room }: { room: RoomView }) {
   const youId = room.you?.id || "";
   const isHolder = room.game.ladyHolderId === youId;
   const candidates = room.players.filter((player) => player.id !== youId && !room.game.ladyUsedPlayerIds.includes(player.id));
+  const pending = room.ladyPendingResult;
 
   return (
     <div className="action-panel lake-panel">
       <h2>湖中女神</h2>
       <p>
-        持有者是 <strong>{playerName(room, room.game.ladyHolderId)}</strong>。查看一名尚未持有過女神的玩家，只會知道他的陣營。
+        持有者是 <strong>{playerName(room, room.game.ladyHolderId)}</strong>。先私下看真實陣營，再選擇要公開宣告什麼。
       </p>
-      {room.ladyResult ? (
+      {pending ? (
+        <div className="lake-result-box">
+          <strong>{playerName(room, pending.targetId)} 真實是{pending.allegiance === "good" ? "好人" : "邪惡"}陣營</strong>
+          <span>選擇你要公開宣告的陣營。</span>
+          <div className="button-row">
+            <button className="primary-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "good")}>
+              <Check size={18} />
+              宣告好人
+            </button>
+            <button className="danger-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "evil")}>
+              <X size={18} />
+              宣告邪惡
+            </button>
+          </div>
+        </div>
+      ) : room.ladyResult ? (
         <p className="lake-result-text">
           你查看了 <strong>{playerName(room, room.ladyResult.targetId)}</strong>：
           {room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
         </p>
       ) : null}
-      {isHolder ? (
+      {isHolder && !pending ? (
         <div className="select-grid">
           {candidates.map((player) => (
             <button className="select-player" key={player.id} onClick={() => socket.emit("useLadyOfLake", player.id)}>
@@ -659,9 +876,9 @@ function LadyOfLake({ room }: { room: RoomView }) {
             </button>
           ))}
         </div>
-      ) : (
+      ) : !pending ? (
         <p className="waiting-line">等待持有者使用湖中女神。</p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -678,26 +895,21 @@ function LobbyPanel({ room }: { room: RoomView }) {
   );
 }
 
-function TeamBuilder({ room }: { room: RoomView }) {
-  const [selected, setSelected] = useState<string[]>([]);
+function TeamBuilder({
+  room,
+  selected,
+  excaliburHolderId,
+  setExcaliburHolderId
+}: {
+  room: RoomView;
+  selected: string[];
+  excaliburHolderId: string | null;
+  setExcaliburHolderId: (value: string | null) => void;
+}) {
   const isLeader = room.you?.id === room.game.leaderId;
   const teamSize = room.game.teamSize;
-
-  useEffect(() => {
-    setSelected([]);
-  }, [room.game.questIndex, room.game.leaderId, teamSize]);
-
-  function togglePlayer(playerId: string) {
-    setSelected((current) => {
-      if (current.includes(playerId)) {
-        return current.filter((id) => id !== playerId);
-      }
-      if (current.length >= teamSize) {
-        return current;
-      }
-      return [...current, playerId];
-    });
-  }
+  const excaliburCandidates = selected.filter((id) => id !== room.game.leaderId);
+  const needsExcaliburHolder = room.game.excaliburEnabled;
 
   return (
     <div className="action-panel">
@@ -705,29 +917,59 @@ function TeamBuilder({ room }: { room: RoomView }) {
       <p>
         隊長是 <strong>{playerName(room, room.game.leaderId)}</strong>，需要 <strong>{teamSize}</strong> 人。
       </p>
-      <div className="select-grid">
-        {room.players.map((player) => {
-          const checked = selected.includes(player.id);
-          return (
-            <button
-              className={checked ? "select-player selected" : "select-player"}
-              key={player.id}
-              disabled={!isLeader}
-              onClick={() => togglePlayer(player.id)}
-            >
-              {checked ? <Check size={18} /> : <Plus size={18} />}
-              {player.name}
-            </button>
-          );
-        })}
-      </div>
+      <p className="muted-line">{isLeader ? "直接點左邊玩家卡片選人；盾牌代表已選入任務。" : "等待隊長點選左邊卡片組隊。"}</p>
+      <TeamDraftSummary room={room} selected={selected} teamSize={teamSize} />
+      {needsExcaliburHolder && isLeader ? (
+        <div className="excalibur-picker">
+          <strong>王者之劍交給誰</strong>
+          <div className="select-grid compact-select-grid">
+            {excaliburCandidates.map((id) => (
+              <button
+                className={excaliburHolderId === id ? "select-player selected" : "select-player"}
+                key={id}
+                onClick={() => setExcaliburHolderId(id)}
+              >
+                <Swords size={18} />
+                {playerName(room, id)}
+              </button>
+            ))}
+          </div>
+          {selected.includes(room.game.leaderId || "") ? <p className="muted-line">隊長不能把王者之劍交給自己。</p> : null}
+        </div>
+      ) : null}
       {isLeader ? (
-        <button className="primary-button" disabled={selected.length !== teamSize} onClick={() => socket.emit("proposeTeam", selected)}>
+        <button
+          className="primary-button full-button"
+          disabled={selected.length !== teamSize || (needsExcaliburHolder && !excaliburHolderId)}
+          onClick={() => socket.emit("proposeTeam", selected, excaliburHolderId)}
+        >
           <Vote size={18} />
           提交隊伍 {selected.length}/{teamSize}
         </button>
       ) : (
         <p className="muted-line">等待隊長提交隊伍。</p>
+      )}
+    </div>
+  );
+}
+
+function TeamDraftSummary({ room, selected, teamSize }: { room: RoomView; selected: string[]; teamSize: number }) {
+  return (
+    <div className="team-draft-summary">
+      <div>
+        <strong>目前隊伍</strong>
+        <span>
+          {selected.length}/{teamSize}
+        </span>
+      </div>
+      {selected.length > 0 ? (
+        <div className="team-strip">
+          {selected.map((id) => (
+            <span key={id}>{playerName(room, id)}</span>
+          ))}
+        </div>
+      ) : (
+        <p className="muted-line">尚未選人。</p>
       )}
     </div>
   );
@@ -765,7 +1007,7 @@ function MissionVote({ room }: { room: RoomView }) {
   const youId = room.you?.id || "";
   const isOnTeam = room.game.proposedTeam.includes(youId);
   const submitted = room.game.missionVotesSubmitted.includes(youId);
-  const canFail = room.yourRole ? roleSide(room.yourRole) === "evil" : false;
+  const canFail = room.yourAllegiance === "evil";
 
   return (
     <div className="action-panel">
@@ -794,14 +1036,58 @@ function MissionVote({ room }: { room: RoomView }) {
   );
 }
 
+function ExcaliburPanel({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const isHolder = room.game.excaliburHolderId === youId;
+  const candidates = room.game.proposedTeam.filter((id) => id !== youId);
+
+  return (
+    <div className="action-panel excalibur-panel">
+      <h2>王者之劍</h2>
+      <p>
+        持有者是 <strong>{playerName(room, room.game.excaliburHolderId)}</strong>。可以更換一名其他任務隊員的任務卡，也可以不使用。
+      </p>
+      <TeamNames room={room} />
+      {isHolder && room.game.excaliburVotes ? (
+        <div className="excalibur-vote-grid">
+          {candidates.map((id) => (
+            <span className={room.game.excaliburVotes?.[id] ? "quest-success" : "quest-fail"} key={id}>
+              {playerName(room, id)}：{room.game.excaliburVotes?.[id] ? "成功" : "失敗"}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {isHolder ? (
+        <div className="select-grid">
+          {candidates.map((id) => (
+            <button className="select-player" key={id} onClick={() => socket.emit("useExcalibur", id)}>
+              <Swords size={18} />
+              更換 {playerName(room, id)}
+            </button>
+          ))}
+          <button className="secondary-button" onClick={() => socket.emit("useExcalibur", null)}>
+            不使用
+          </button>
+        </div>
+      ) : (
+        <p className="waiting-line">等待王者之劍持有者決定。</p>
+      )}
+    </div>
+  );
+}
+
 function Assassination({ room }: { room: RoomView }) {
   const youId = room.you?.id || "";
-  const isAssassin = room.game.assassinId === youId;
+  const canVote = room.yourAllegiance === "evil";
+  const voted = room.game.assassinationVotesSubmitted.includes(youId);
   return (
     <div className="action-panel final-panel">
-      <h2>刺客時刻</h2>
-      <p>亞瑟陣營完成三次任務，刺客還有最後一擊。</p>
-      {isAssassin ? (
+      <h2>刺殺梅林</h2>
+      <p>
+        亞瑟陣營完成三次任務，邪惡陣營共同投票猜梅林。
+        已投 {room.game.assassinationVotesSubmitted.length}/{room.game.assassinationVoteCount}
+      </p>
+      {canVote && !voted ? (
         <div className="select-grid">
           {room.players
             .filter((player) => player.id !== youId)
@@ -812,8 +1098,10 @@ function Assassination({ room }: { room: RoomView }) {
               </button>
             ))}
         </div>
+      ) : canVote ? (
+        <p className="waiting-line">你已提交猜測，等待其他邪惡玩家。</p>
       ) : (
-        <p className="waiting-line">等待刺客選擇目標。</p>
+        <p className="waiting-line">等待邪惡陣營做最後刺殺。</p>
       )}
     </div>
   );
@@ -839,27 +1127,86 @@ function Finished({ room }: { room: RoomView }) {
   );
 }
 
-function RolePreview() {
-  const roles: RoleId[] = ["merlin", "percival", "loyal", "assassin", "morgana", "mordred", "oberon", "minion"];
+function RolePreview({ room, compact = false }: { room?: RoomView; compact?: boolean }) {
+  const playerCount = room ? Math.max(room.players.length, MIN_PLAYERS) : 0;
+  const roles = room ? getRoleSet(playerCount, { lancelotEnabled: room.lancelotEnabledSetting && playerCount >= 7 }) : fullRoleGallery;
+  const goodCount = roles.filter((role) => roleSide(role) === "good").length;
+  const evilCount = roles.length - goodCount;
+  const title = room ? `${roles.length} 人角色` : "角色圖鑑";
+
+  if (compact && room) {
+    return (
+      <details className="panel-block role-preview collapsed-role-preview">
+        <summary>
+          <span>
+            <Crown size={17} />
+            {title}
+          </span>
+          <b>
+            好 {goodCount} / 壞 {evilCount}
+          </b>
+        </summary>
+        <RoleGallery roles={roles} />
+      </details>
+    );
+  }
 
   return (
     <div className="panel-block role-preview">
       <div className="panel-title">
         <Crown size={17} />
-        角色圖鑑
+        {title}
       </div>
-      <div className="role-gallery-grid">
-        {roles.map((roleId) => {
-          const role = ROLE_DEFINITIONS[roleId];
-          return (
-            <div className={`role-gallery-card ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={role.id}>
-              <span className={`role-gallery-art card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
-              <strong>{role.shortName}</strong>
-            </div>
-          );
-        })}
-      </div>
+      {room ? (
+        <div className="role-config-summary">
+          <span className="chip-good">好人 {goodCount}</span>
+          <span className="chip-evil">邪惡 {evilCount}</span>
+        </div>
+      ) : null}
+      <RoleGallery roles={roles} />
     </div>
+  );
+}
+
+function RoleGallery({ roles }: { roles: RoleId[] }) {
+  return (
+    <div className="role-gallery-grid">
+      {roles.map((roleId, index) => {
+        const role = ROLE_DEFINITIONS[roleId];
+        return (
+          <div className={`role-gallery-card ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={`${role.id}-${index}`}>
+            <span className={`role-gallery-art card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
+            <strong>{role.shortName}</strong>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BotOpinions({ room }: { room: RoomView }) {
+  if (room.game.botOpinions.length === 0) {
+    return null;
+  }
+
+  return (
+    <details className="panel-block bot-opinions collapsed-info-panel">
+      <summary>
+        <span>
+          <Bot size={17} />
+          電腦意見
+        </span>
+        <b>{room.game.botOpinions.length}</b>
+      </summary>
+      <div className="history-list">
+        {room.game.botOpinions.slice(-4).map((opinion) => (
+          <div className="bot-opinion-row" key={opinion.id}>
+            <strong>{playerName(room, opinion.playerId)}</strong>
+            <span>{opinion.message}</span>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -913,21 +1260,15 @@ function LadyHistory({ room }: { room: RoomView }) {
       </div>
       <div className="history-list">
         {room.game.ladyInspections.length === 0 ? <p className="muted-line">尚未使用</p> : null}
-        {room.game.ladyInspections.map((inspection, index) => {
-          const isYourResult = room.you?.id === inspection.fromId && room.ladyResult?.targetId === inspection.targetId;
-          return (
-            <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
-              <strong>#{index + 1}</strong>
-              <span className="lady-history-main">
-                {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
-                {inspection.announcedAllegiance ? (
-                  <em>宣稱{inspection.announcedAllegiance === "good" ? "好人" : "邪惡"}</em>
-                ) : null}
-              </span>
-              {isYourResult ? <b>真實：{room.ladyResult?.allegiance === "good" ? "好人" : "邪惡"}</b> : null}
-            </div>
-          );
-        })}
+        {room.game.ladyInspections.map((inspection, index) => (
+          <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
+            <strong>#{index + 1}</strong>
+            <span className="lady-history-main">
+              {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
+              {inspection.announcedAllegiance ? <em>宣稱{inspection.announcedAllegiance === "good" ? "好人" : "邪惡"}</em> : null}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -960,8 +1301,15 @@ function formatDuration(ms: number): string {
   return `${minutes} 分`;
 }
 
-function playerSeatClass(room: RoomView, player: PlayerPublic): string {
+function seatOrderIndex(room: RoomView, playerId: string): number | null {
+  const order = room.game.playerOrder.length > 0 ? room.game.playerOrder : room.players.map((player) => player.id);
+  const index = order.indexOf(playerId);
+  return index >= 0 ? index : null;
+}
+
+function playerSeatClass(room: RoomView, player: PlayerPublic, isDraftMember = false, isSelectable = false): string {
   const visibleRole = visibleRoleForPlayer(room, player.id);
+  const badge = intelBadge(room, player.id);
   const classes = ["seat-card"];
   if (visibleRole) {
     classes.push("known-card", `card-art-${visibleRole}`);
@@ -973,6 +1321,24 @@ function playerSeatClass(room: RoomView, player: PlayerPublic): string {
   }
   if (player.id === room.game.leaderId) {
     classes.push("leader-card");
+  }
+  if (room.game.proposedTeam.includes(player.id)) {
+    classes.push("quest-member-card");
+  }
+  if (isDraftMember) {
+    classes.push("draft-team-card", "quest-member-card");
+  }
+  if (isSelectable) {
+    classes.push("selectable-seat-card");
+  }
+  if (badge) {
+    classes.push(badge.tone === "evil" ? "intel-known-evil" : "intel-known-good");
+  }
+  if (room.ladyResult?.targetId === player.id) {
+    classes.push(room.ladyResult.allegiance === "good" ? "lady-known-good" : "lady-known-evil");
+  }
+  if (room.ladyPendingResult?.targetId === player.id) {
+    classes.push(room.ladyPendingResult.allegiance === "good" ? "lady-known-good" : "lady-known-evil");
   }
   return classes.join(" ");
 }
@@ -992,23 +1358,26 @@ function revealedRoleName(room: RoomView, playerId: string): string | null {
   return role ? ROLE_DEFINITIONS[role].shortName : null;
 }
 
-function intelBadge(room: RoomView, playerId: string): string | null {
+function intelBadge(room: RoomView, playerId: string): { text: string; tone: "good" | "evil" | "candidate" } | null {
   if (room.you?.id === playerId) {
     return null;
   }
 
   const roleIntel = room.roleKnowledge.find((knowledge) => knowledge.playerIds.includes(playerId));
   if (roleIntel?.label.includes("梅林候選")) {
-    return "梅林候選";
+    return { text: "梅林候選", tone: "candidate" };
   }
   if (roleIntel?.label.includes("邪惡同伴")) {
-    return "邪惡同伴";
+    return { text: "邪惡同伴", tone: "evil" };
   }
   if (roleIntel?.label.includes("邪惡玩家")) {
-    return "邪惡";
+    return { text: "邪惡", tone: "evil" };
   }
   if (room.ladyResult?.targetId === playerId) {
-    return room.ladyResult.allegiance === "good" ? "女神：好人" : "女神：邪惡";
+    return room.ladyResult.allegiance === "good" ? { text: "女神：好人", tone: "good" } : { text: "女神：邪惡", tone: "evil" };
+  }
+  if (room.ladyPendingResult?.targetId === playerId) {
+    return room.ladyPendingResult.allegiance === "good" ? { text: "女神：好人", tone: "good" } : { text: "女神：邪惡", tone: "evil" };
   }
   return null;
 }

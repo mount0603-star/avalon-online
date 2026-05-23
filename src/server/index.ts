@@ -20,9 +20,13 @@ import {
   resetRoom,
   rooms,
   runBotActions,
+  setExcaliburEnabled,
   setLadyEnabled,
+  setLadyHolderMode,
+  setLancelotEnabled,
   startGame,
   touchRoom,
+  useExcalibur,
   useLadyOfLake
 } from "./game";
 import type {
@@ -98,10 +102,18 @@ io.on("connection", (socket) => {
   socket.on("addBot", () => runAction(socket, (room, playerId) => addBot(room, playerId)));
   socket.on("removeBot", (botId) => runAction(socket, (room, playerId) => removeBot(room, playerId, botId)));
   socket.on("setLadyEnabled", (enabled) => runAction(socket, (room, playerId) => setLadyEnabled(room, playerId, enabled)));
-  socket.on("proposeTeam", (teamIds) => runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds)));
+  socket.on("setLadyHolderMode", (mode) => runAction(socket, (room, playerId) => setLadyHolderMode(room, playerId, mode)));
+  socket.on("setLancelotEnabled", (enabled) => runAction(socket, (room, playerId) => setLancelotEnabled(room, playerId, enabled)));
+  socket.on("setExcaliburEnabled", (enabled) => runAction(socket, (room, playerId) => setExcaliburEnabled(room, playerId, enabled)));
+  socket.on("proposeTeam", (teamIds, excaliburHolderId) =>
+    runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds, excaliburHolderId))
+  );
   socket.on("castTeamVote", (approve) => runAction(socket, (room, playerId) => castTeamVote(room, playerId, approve)));
   socket.on("castMissionVote", (success) => runAction(socket, (room, playerId) => castMissionVote(room, playerId, success)));
-  socket.on("useLadyOfLake", (targetId) => runAction(socket, (room, playerId) => useLadyOfLake(room, playerId, targetId)));
+  socket.on("useExcalibur", (targetId) => runAction(socket, (room, playerId) => useExcalibur(room, playerId, targetId)));
+  socket.on("useLadyOfLake", (targetId, announcedAllegiance) =>
+    runAction(socket, (room, playerId) => useLadyOfLake(room, playerId, targetId, announcedAllegiance))
+  );
   socket.on("assassinate", (targetId) => runAction(socket, (room, playerId) => assassinate(room, playerId, targetId)));
   socket.on("resetRoom", () => runAction(socket, (room, playerId) => resetRoom(room, playerId)));
   socket.on("leaveRoom", () => {

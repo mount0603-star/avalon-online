@@ -4,10 +4,12 @@ export type RoleId =
   | "merlin"
   | "percival"
   | "loyal"
+  | "lancelotGood"
   | "assassin"
   | "morgana"
   | "mordred"
   | "oberon"
+  | "lancelotEvil"
   | "minion";
 
 export type RoleDefinition = {
@@ -40,6 +42,13 @@ export const ROLE_DEFINITIONS: Record<RoleId, RoleDefinition> = {
     allegiance: "good",
     summary: "沒有額外情報，靠討論與投票守住任務。"
   },
+  lancelotGood: {
+    id: "lancelotGood",
+    name: "蘭斯洛特（正義）",
+    shortName: "蘭斯洛特",
+    allegiance: "good",
+    summary: "初始為亞瑟陣營；忠誠牌可能讓兩位蘭斯洛特交換陣營。"
+  },
   assassin: {
     id: "assassin",
     name: "刺客",
@@ -67,6 +76,13 @@ export const ROLE_DEFINITIONS: Record<RoleId, RoleDefinition> = {
     shortName: "奧伯倫",
     allegiance: "evil",
     summary: "邪惡陣營；不知道其他邪惡玩家，也不會被邪惡同伴看見。"
+  },
+  lancelotEvil: {
+    id: "lancelotEvil",
+    name: "蘭斯洛特（邪惡）",
+    shortName: "蘭斯洛特",
+    allegiance: "evil",
+    summary: "初始為邪惡陣營；梅林會看見他，但忠誠牌可能讓兩位蘭斯洛特交換陣營。"
   },
   minion: {
     id: "minion",
@@ -97,6 +113,26 @@ export const ROLE_SET_BY_PLAYER_COUNT: Record<number, RoleId[]> = {
   ]
 };
 
+export const LANCELOT_ROLE_SET_BY_PLAYER_COUNT: Record<number, RoleId[]> = {
+  5: ["merlin", "percival", "loyal", "assassin", "morgana"],
+  6: ["merlin", "percival", "loyal", "loyal", "assassin", "morgana"],
+  7: ["merlin", "percival", "loyal", "lancelotGood", "assassin", "morgana", "lancelotEvil"],
+  8: ["merlin", "percival", "loyal", "loyal", "lancelotGood", "assassin", "morgana", "lancelotEvil"],
+  9: ["merlin", "percival", "loyal", "loyal", "loyal", "lancelotGood", "assassin", "morgana", "lancelotEvil"],
+  10: [
+    "merlin",
+    "percival",
+    "loyal",
+    "loyal",
+    "loyal",
+    "lancelotGood",
+    "assassin",
+    "morgana",
+    "lancelotEvil",
+    "oberon"
+  ]
+};
+
 export const QUEST_TEAM_SIZES: Record<number, number[]> = {
   5: [2, 3, 2, 3, 3],
   6: [2, 3, 4, 3, 4],
@@ -122,11 +158,10 @@ export function roleSide(role: RoleId): Allegiance {
   return ROLE_DEFINITIONS[role].allegiance;
 }
 
-export function getRoleSet(playerCount: number): RoleId[] {
-  const roles = ROLE_SET_BY_PLAYER_COUNT[playerCount];
+export function getRoleSet(playerCount: number, options: { lancelotEnabled?: boolean } = {}): RoleId[] {
+  const roles = (options.lancelotEnabled ? LANCELOT_ROLE_SET_BY_PLAYER_COUNT : ROLE_SET_BY_PLAYER_COUNT)[playerCount];
   if (!roles) {
     throw new Error(`Unsupported player count: ${playerCount}`);
   }
   return roles;
 }
-
