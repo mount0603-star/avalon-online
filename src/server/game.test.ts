@@ -50,6 +50,29 @@ test("role definitions have public display names", () => {
   }
 });
 
+test("percival sees merlin and morgana while merlin cannot see mordred", () => {
+  const { room, playerId: hostId } = createRoom("Merlin");
+  ["Percival", "Loyal 1", "Loyal 2", "Assassin", "Morgana", "Mordred"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [merlinId, percivalId, loyalAId, loyalBId, assassinId, morganaId, mordredId] = room.game.playerOrder;
+
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(loyalAId)!.role = "loyal";
+  room.players.get(loyalBId)!.role = "loyal";
+  room.players.get(assassinId)!.role = "assassin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.players.get(mordredId)!.role = "mordred";
+
+  const percivalKnowledge = buildRoomView(room, percivalId).roleKnowledge.flatMap((item) => item.playerIds);
+  assert.deepEqual(new Set(percivalKnowledge), new Set([merlinId, morganaId]));
+
+  const merlinKnowledge = buildRoomView(room, merlinId).roleKnowledge.flatMap((item) => item.playerIds);
+  assert.ok(merlinKnowledge.includes(assassinId));
+  assert.ok(merlinKnowledge.includes(morganaId));
+  assert.equal(merlinKnowledge.includes(mordredId), false);
+});
+
 test("bot leaders can propose a legal team", () => {
   const { room, playerId: hostId } = createRoom("A");
   for (let index = 0; index < 4; index += 1) {

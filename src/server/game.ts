@@ -221,15 +221,18 @@ export function startGame(room: RoomInternal, playerId: string): void {
     room.players.get(id)!.role = roleDeck[index];
   });
 
+  const leaderIndex = Math.floor(Math.random() * order.length);
+  const ladyHolderId = playerCount >= 7 ? order[(leaderIndex - 1 + order.length) % order.length] : null;
+
   room.game = {
     ...emptyGame(),
     phase: "team-building",
     playerOrder: order,
-    leaderIndex: Math.floor(Math.random() * order.length),
+    leaderIndex,
     questIndex: 0,
     ladyEnabled: playerCount >= 7,
-    ladyHolderId: playerCount >= 7 ? order[order.length - 1] : null,
-    ladyUsedPlayerIds: playerCount >= 7 ? [order[order.length - 1]] : []
+    ladyHolderId,
+    ladyUsedPlayerIds: ladyHolderId ? [ladyHolderId] : []
   };
 }
 

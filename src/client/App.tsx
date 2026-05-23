@@ -69,6 +69,24 @@ const roleMark: Record<RoleId, string> = {
   minion: "◆"
 };
 
+const questTeamSizes: Record<number, number[]> = {
+  5: [2, 3, 2, 3, 3],
+  6: [2, 3, 4, 3, 4],
+  7: [2, 3, 3, 4, 4],
+  8: [3, 4, 4, 5, 5],
+  9: [3, 4, 4, 5, 5],
+  10: [3, 4, 4, 5, 5]
+};
+
+const questFailThresholds: Record<number, number[]> = {
+  5: [1, 1, 1, 1, 1],
+  6: [1, 1, 1, 1, 1],
+  7: [1, 1, 1, 2, 1],
+  8: [1, 1, 1, 2, 1],
+  9: [1, 1, 1, 2, 1],
+  10: [1, 1, 1, 2, 1]
+};
+
 export function App() {
   const [room, setRoom] = useState<RoomView | null>(null);
   const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || "");
@@ -97,6 +115,54 @@ export function App() {
       socket.off("roomError", onError);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
+    };
+  }, []);
+
+  useEffect(() => {
+    const storedName = localStorage.getItem(PLAYER_NAME_KEY);
+    const storedRoomCode = localStorage.getItem(ROOM_CODE_KEY);
+    const storedPlayerId = localStorage.getItem(PLAYER_ID_KEY);
+    if (!storedName || !storedRoomCode || !storedPlayerId) {
+      return;
+    }
+
+    setName(storedName);
+    setRoomCode(storedRoomCode);
+
+    let cancelled = false;
+    const restoreRoom = () => {
+      if (cancelled) {
+        return;
+      }
+      socket.emit(
+        "joinRoom",
+        {
+          roomCode: storedRoomCode,
+          name: storedName,
+          playerId: storedPlayerId
+        },
+        (payload) => {
+          if (cancelled) {
+            return;
+          }
+          if ("error" in payload) {
+            setError("無法回到原本房間，可能房間已重開。");
+            return;
+          }
+          persistSession(payload, storedName);
+        }
+      );
+    };
+
+    if (socket.connected) {
+      restoreRoom();
+    } else {
+      socket.once("connect", restoreRoom);
+    }
+
+    return () => {
+      cancelled = true;
+      socket.off("connect", restoreRoom);
     };
   }, []);
 
@@ -262,34 +328,20 @@ function GameRoom({ room, error }: { room: RoomView; error: string }) {
       <div className="game-grid">
         <aside className="side-panel">
           <PlayerList room={room} />
-          <QuestBoard room={room} />
+          <HostControls room={room} />
         </aside>
 
         <section className="play-panel">
           <RoleCard room={room} />
+          <MissionBoard room={room} />
           <PhasePanel room={room} />
         </section>
 
         <aside className="side-panel">
-          {room.game.phase === "lobby" ? <RolePreview playerCount={room.players.length} /> : <VoteHistory room={room} />}
-          {isHost && room.game.phase === "lobby" ? (
-            <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
-              <Bot size={18} />
-              新增電腦
-            </button>
-          ) : null}
-          {isHost && room.game.phase === "lobby" ? (
-            <button className="primary-button full-button" disabled={room.players.length < MIN_PLAYERS} onClick={() => socket.emit("startGame")}>
-              <Swords size={18} />
-              開始遊戲
-            </button>
-          ) : null}
-          {isHost && room.game.phase === "finished" ? (
-            <button className="secondary-button full-button" onClick={() => socket.emit("resetRoom")}>
-              <RotateCcw size={18} />
-              回到大廳
-            </button>
-          ) : null}
+          {room.game.phase === "lobby" ? <RolePreview playerCount={room.players.length} /> : null}
+          <VoteHistory room={room} />
+          <LadyHistory room={room} />
+          {isHost && room.game.phase === "finished" ? <ResetControl /> : null}
         </aside>
       </div>
     </section>
@@ -305,15 +357,21 @@ function PlayerList({ room }: { room: RoomView }) {
         <Users size={17} />
         玩家 {room.players.length}/{MAX_PLAYERS}
       </div>
-      <div className="player-list">
+      <div className="seat-grid">
         {room.players.map((player) => (
-          <div className="player-row" key={player.id}>
-            <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
-            <span className="player-name">{player.name}</span>
-            {player.isHost ? <Crown className="small-mark" size={15} /> : null}
-            {player.isBot ? <span className="tag bot-tag">電腦</span> : null}
-            {leaderId === player.id ? <span className="tag">隊長</span> : null}
-            {room.you?.id === player.id ? <span className="tag muted">你</span> : null}
+          <div className={playerSeatClass(room, player)} key={player.id}>
+            <div className="seat-card-face">
+              <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
+              <div className="seat-name">{player.name}</div>
+              <div className="seat-tags">
+                {player.isHost ? <span className="seat-tag host">房主</span> : null}
+                {player.isBot ? <span className="seat-tag bot">電腦</span> : null}
+                {leaderId === player.id ? <span className="seat-tag leader">隊長</span> : null}
+                {room.you?.id === player.id ? <span className="seat-tag you">你</span> : null}
+              </div>
+              {intelBadge(room, player.id) ? <div className="intel-badge">{intelBadge(room, player.id)}</div> : null}
+              {revealedRoleName(room, player.id) ? <div className="role-name-badge">{revealedRoleName(room, player.id)}</div> : null}
+            </div>
             {canRemoveBots && player.isBot ? (
               <button className="mini-icon-button" aria-label={`移除 ${player.name}`} onClick={() => socket.emit("removeBot", player.id)}>
                 <Trash2 size={14} />
@@ -326,36 +384,73 @@ function PlayerList({ room }: { room: RoomView }) {
   );
 }
 
-function QuestBoard({ room }: { room: RoomView }) {
+function HostControls({ room }: { room: RoomView }) {
+  if (!room.you?.isHost || room.game.phase !== "lobby") {
+    return null;
+  }
+
+  return (
+    <div className="panel-block host-controls">
+      <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
+        <Bot size={18} />
+        新增電腦
+      </button>
+      <button className="primary-button full-button" disabled={room.players.length < MIN_PLAYERS} onClick={() => socket.emit("startGame")}>
+        <Swords size={18} />
+        開始遊戲
+      </button>
+    </div>
+  );
+}
+
+function ResetControl() {
+  return (
+    <button className="secondary-button full-button" onClick={() => socket.emit("resetRoom")}>
+      <RotateCcw size={18} />
+      回到大廳
+    </button>
+  );
+}
+
+function MissionBoard({ room }: { room: RoomView }) {
   const playerCount = Math.max(room.players.length, MIN_PLAYERS);
   return (
-    <div className="panel-block">
+    <div className="mission-board">
       <div className="panel-title">
         <Flag size={17} />
-        任務進度
+        任務盤
       </div>
-      <div className="quest-track">
+      <div className="quest-orbit">
         {[0, 1, 2, 3, 4].map((index) => {
           const quest = room.game.quests.find((item) => item.index === index);
           const isCurrent = room.game.questIndex === index && room.game.phase !== "lobby" && room.game.phase !== "finished";
           return (
-            <div className={`quest-node ${quest?.success ? "quest-success" : ""} ${quest && !quest.success ? "quest-fail" : ""} ${isCurrent ? "quest-current" : ""}`} key={index}>
-              <span>{index + 1}</span>
-              {quest ? <small>{quest.success ? "成功" : `${quest.failCount} 失敗`}</small> : <small>{teamSizeText(room, playerCount, index)}</small>}
+            <div
+              className={`quest-medallion ${quest?.success ? "quest-success" : ""} ${quest && !quest.success ? "quest-fail" : ""} ${isCurrent ? "quest-current" : ""}`}
+              key={index}
+            >
+              <small>任務 {index + 1}</small>
+              <strong>{questTeamSizes[playerCount]?.[index] || "-"}</strong>
+              {quest ? (
+                <span>{quest.success ? "成功" : `${quest.failCount} 失敗`}</span>
+              ) : (
+                <span>{questFailText(playerCount, index)}</span>
+              )}
             </div>
           );
         })}
       </div>
-      <div className="counter-line">
-        <span>否決</span>
-        <strong>{room.game.failedVoteCount}/5</strong>
+      <div className="reject-track" aria-label="否決次數">
+        {[1, 2, 3, 4, 5].map((value) => (
+          <span className={value <= room.game.failedVoteCount ? "reject-token active" : "reject-token"} key={value}>
+            {value}
+          </span>
+        ))}
       </div>
-      {room.game.ladyEnabled ? (
-        <div className="counter-line lady-line">
-          <span>湖中女神</span>
-          <strong>{playerName(room, room.game.ladyHolderId)}</strong>
-        </div>
-      ) : null}
+      <div className="board-foot">
+        <span>否決 {room.game.failedVoteCount}/5</span>
+        {room.game.ladyEnabled ? <span>湖中女神：{playerName(room, room.game.ladyHolderId)}</span> : null}
+      </div>
     </div>
   );
 }
@@ -674,17 +769,61 @@ function VoteHistory({ room }: { room: RoomView }) {
         <Vote size={17} />
         表決紀錄
       </div>
-      <div className="history-list">
+      <div className="history-list detailed-history">
         {room.game.voteHistory.length === 0 ? <p className="muted-line">尚無紀錄</p> : null}
         {room.game.voteHistory.slice(-5).map((vote) => (
           <div className="history-row" key={vote.round}>
-            <strong>#{vote.round}</strong>
-            <span>{vote.approved ? "通過" : "否決"}</span>
-            <small>
-              {vote.approvals.length}:{vote.rejections.length}
-            </small>
+            <div className="history-head">
+              <strong>#{vote.round}</strong>
+              <span>{vote.approved ? "通過" : "否決"}</span>
+              <small>
+                {vote.approvals.length}:{vote.rejections.length}
+              </small>
+            </div>
+            <p>隊長：{playerName(room, vote.leaderId)}</p>
+            <p>隊伍：{vote.team.map((id) => playerName(room, id)).join("、")}</p>
+            <div className="vote-split">
+              <div>
+                <b>贊成</b>
+                <span>{vote.approvals.map((id) => playerName(room, id)).join("、") || "無"}</span>
+              </div>
+              <div>
+                <b>反對</b>
+                <span>{vote.rejections.map((id) => playerName(room, id)).join("、") || "無"}</span>
+              </div>
+            </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function LadyHistory({ room }: { room: RoomView }) {
+  if (!room.game.ladyEnabled) {
+    return null;
+  }
+
+  return (
+    <div className="panel-block">
+      <div className="panel-title">
+        <Waves size={17} />
+        湖中女神紀錄
+      </div>
+      <div className="history-list">
+        {room.game.ladyInspections.length === 0 ? <p className="muted-line">尚未使用</p> : null}
+        {room.game.ladyInspections.map((inspection, index) => {
+          const isYourResult = room.you?.id === inspection.fromId && room.ladyResult?.targetId === inspection.targetId;
+          return (
+            <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
+              <strong>#{index + 1}</strong>
+              <span>
+                {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
+              </span>
+              {isYourResult ? <b>{room.ladyResult?.allegiance === "good" ? "好人" : "邪惡"}</b> : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -707,15 +846,65 @@ function playerName(room: RoomView, playerId: string | null): string {
   return room.players.find((player) => player.id === playerId)?.name || "未知";
 }
 
+function playerSeatClass(room: RoomView, player: PlayerPublic): string {
+  const visibleRole = visibleRoleForPlayer(room, player.id);
+  const classes = ["seat-card"];
+  if (visibleRole) {
+    classes.push("known-card", `card-art-${visibleRole}`);
+  } else {
+    classes.push("hidden-card");
+  }
+  if (player.id === room.you?.id) {
+    classes.push("self-card");
+  }
+  if (player.id === room.game.leaderId) {
+    classes.push("leader-card");
+  }
+  return classes.join(" ");
+}
+
+function visibleRoleForPlayer(room: RoomView, playerId: string): RoleId | null {
+  if (room.revealedRoles?.[playerId]) {
+    return room.revealedRoles[playerId];
+  }
+  if (room.you?.id === playerId) {
+    return room.yourRole;
+  }
+  return null;
+}
+
+function revealedRoleName(room: RoomView, playerId: string): string | null {
+  const role = visibleRoleForPlayer(room, playerId);
+  return role ? ROLE_DEFINITIONS[role].shortName : null;
+}
+
+function intelBadge(room: RoomView, playerId: string): string | null {
+  if (room.you?.id === playerId) {
+    return null;
+  }
+
+  const roleIntel = room.roleKnowledge.find((knowledge) => knowledge.playerIds.includes(playerId));
+  if (roleIntel?.label.includes("梅林候選")) {
+    return "梅林候選";
+  }
+  if (roleIntel?.label.includes("邪惡同伴")) {
+    return "邪惡同伴";
+  }
+  if (roleIntel?.label.includes("邪惡玩家")) {
+    return "邪惡";
+  }
+  if (room.ladyResult?.targetId === playerId) {
+    return room.ladyResult.allegiance === "good" ? "女神：好人" : "女神：邪惡";
+  }
+  return null;
+}
+
+function questFailText(playerCount: number, index: number): string {
+  const threshold = questFailThresholds[playerCount]?.[index] || 1;
+  return threshold > 1 ? `${threshold} 張失敗` : "1 張失敗";
+}
+
 function teamSizeText(room: RoomView, fallbackCount: number, index: number): string {
   const count = room.players.length >= MIN_PLAYERS ? room.players.length : fallbackCount;
-  const table: Record<number, number[]> = {
-    5: [2, 3, 2, 3, 3],
-    6: [2, 3, 4, 3, 4],
-    7: [2, 3, 3, 4, 4],
-    8: [3, 4, 4, 5, 5],
-    9: [3, 4, 4, 5, 5],
-    10: [3, 4, 4, 5, 5]
-  };
-  return `${table[count]?.[index] || "-"} 人`;
+  return `${questTeamSizes[count]?.[index] || "-"} 人`;
 }
