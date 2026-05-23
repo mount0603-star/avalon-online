@@ -9,8 +9,6 @@ import {
   LogIn,
   Plus,
   RotateCcw,
-  Shield,
-  Skull,
   Sparkles,
   Swords,
   Target,
@@ -52,6 +50,17 @@ const roleTone: Record<RoleId, string> = {
   mordred: "role-evil",
   oberon: "role-evil",
   minion: "role-evil"
+};
+
+const roleMark: Record<RoleId, string> = {
+  merlin: "✦",
+  percival: "◇",
+  loyal: "♜",
+  assassin: "†",
+  morgana: "☾",
+  mordred: "♛",
+  oberon: "◌",
+  minion: "◆"
 };
 
 export function App() {
@@ -344,7 +353,9 @@ function RoleCard({ room }: { room: RoomView }) {
   const side = role.allegiance === "good" ? "亞瑟陣營" : "邪惡陣營";
   return (
     <div className={`identity-panel ${role.allegiance === "good" ? "identity-good" : "identity-evil"}`}>
-      {role.allegiance === "good" ? <Shield size={28} /> : <Skull size={28} />}
+      <div className={`role-portrait portrait-${room.yourRole}`}>
+        <span>{roleMark[room.yourRole]}</span>
+      </div>
       <div>
         <span>{side}</span>
         <h2>{role.name}</h2>
@@ -572,6 +583,7 @@ function RolePreview({ playerCount }: { playerCount: number }) {
           const role = ROLE_DEFINITIONS[roleId as RoleId];
           return (
             <div className={`role-chip ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={role.id}>
+              <span className={`role-mini mini-${role.id}`}>{roleMark[role.id]}</span>
               <span>{role.shortName}</span>
               {count > 1 ? <strong>x{count}</strong> : null}
             </div>
