@@ -9,11 +9,14 @@ import {
   castMissionVote,
   buildRoomView,
   addBot,
+  removeBot,
   runBotActions,
+  updateTeamDraft,
   useLadyOfLake,
   useExcalibur,
   assassinate,
   leaveRoom,
+  resetRoom,
   setLadyEnabled,
   setLadyHolderMode,
   setLancelotEnabled,
@@ -97,6 +100,20 @@ test("bot leaders can propose a legal team", () => {
   assert.equal(room.game.proposedTeam.length, 2);
 });
 
+test("leader draft selections are public before submitting the team", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const leaderView = buildRoomView(room, hostId);
+  const leaderId = leaderView.game.leaderId!;
+  const draft = room.game.playerOrder.slice(0, leaderView.game.teamSize);
+
+  updateTeamDraft(room, leaderId, draft);
+
+  assert.deepEqual(buildRoomView(room, room.game.playerOrder[1]).game.proposedTeam, draft);
+  assert.equal(room.game.phase, "team-building");
+});
+
 test("lady of the lake reveals allegiance only to the holder and passes token", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E", "F", "G"].forEach((name) => joinRoom(room.code, name));
@@ -127,6 +144,20 @@ test("lady of the lake reveals allegiance only to the holder and passes token", 
   assert.equal(room.game.ladyInspections[0].announcedAllegiance, "good");
 });
 
+test("lady phase skips cleanly when there are no legal targets", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  room.game.phase = "lady";
+  room.game.ladyEnabled = true;
+  room.game.ladyHolderId = hostId;
+  room.game.ladyUsedPlayerIds = [...room.game.playerOrder];
+
+  useLadyOfLake(room, hostId, "", null);
+
+  assert.equal(room.game.phase, "team-building");
+});
+
 test("host can disable lady of the lake before the game starts", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
@@ -154,6 +185,22 @@ test("host can configure API bots without exposing the key", () => {
   assert.equal(view.botAiSetting.provider, "deepseek");
   assert.equal(view.botAiSetting.apiKeyConfigured, true);
   assert.equal("apiKey" in view.botAiSetting, false);
+});
+
+test("host can configure Gemini-compatible API bots", () => {
+  const { room, playerId: hostId } = createRoom("A");
+
+  setBotAiSettings(room, hostId, {
+    enabled: true,
+    provider: "gemini",
+    apiKey: "test-gemini-key"
+  });
+
+  const view = buildRoomView(room, hostId);
+  assert.equal(view.botAiSetting.provider, "gemini");
+  assert.equal(view.botAiSetting.baseUrl, "https://generativelanguage.googleapis.com/v1beta/openai");
+  assert.equal(view.botAiSetting.model, "gemini-2.5-flash");
+  assert.equal(view.botAiSetting.apiKeyConfigured, true);
 });
 
 test("lady holder can start from the tail player or a random player", () => {
@@ -310,6 +357,33 @@ test("evil team votes together for the final merlin assassination", () => {
   assert.equal(room.game.assassinTargetId, merlinId);
 });
 
+test("assassination reveals evil players first but hides full roles until finished", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [merlinId, percivalId, loyalId, assassinId, morganaId] = room.game.playerOrder;
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(loyalId)!.role = "loyal";
+  room.players.get(assassinId)!.role = "assassin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.game.phase = "assassination";
+  room.game.assassinationVotes = {};
+
+  const assassinationView = buildRoomView(room, merlinId);
+  assert.deepEqual(new Set(assassinationView.publicEvilPlayerIds), new Set([assassinId, morganaId]));
+  assert.equal(assassinationView.revealedRoles, null);
+  assert.equal(assassinationView.game.assassinId, null);
+  assert.throws(() => assassinate(room, assassinId, morganaId), /不能刺殺邪惡陣營玩家/);
+
+  assassinate(room, assassinId, percivalId);
+  assassinate(room, morganaId, percivalId);
+
+  const finalView = buildRoomView(room, merlinId);
+  assert.equal(finalView.revealedRoles?.[merlinId], "merlin");
+  assert.equal(finalView.game.assassinId, assassinId);
+});
+
 test("leaving during a game lets a bot take over and promotes a human host", () => {
   const { room, playerId: hostId } = createRoom("A");
   const { playerId: nextHostId } = joinRoom(room.code, "B");
@@ -322,6 +396,42 @@ test("leaving during a game lets a bot take over and promotes a human host", () 
   assert.equal(room.players.get(hostId)?.isBot, true);
   assert.equal(room.hostId, nextHostId);
   assert.equal(room.players.get(nextHostId)?.isHost, true);
+});
+
+test("same name can rejoin a bot takeover and finished-room bots can be removed", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  const { playerId: bId } = joinRoom(room.code, "B");
+  ["C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  leaveRoom(room, bId);
+
+  const { playerId: rejoinedId } = joinRoom(room.code, "B");
+  assert.equal(rejoinedId, bId);
+  assert.equal(room.players.get(bId)?.isBot, false);
+
+  leaveRoom(room, bId);
+  room.game.phase = "finished";
+  removeBot(room, room.hostId, bId);
+  assert.equal(room.players.has(bId), false);
+});
+
+test("bot API key remains in the room across resets", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  setBotAiSettings(room, hostId, {
+    enabled: true,
+    provider: "openai",
+    apiKey: "sk-room",
+    model: "gpt-5-mini"
+  });
+  startGame(room, hostId);
+  room.game.phase = "finished";
+
+  resetRoom(room, hostId);
+
+  const view = buildRoomView(room, hostId);
+  assert.equal(view.botAiSetting.enabled, true);
+  assert.equal(view.botAiSetting.apiKeyConfigured, true);
 });
 
 test("idle rooms expire after the configured timeout", () => {

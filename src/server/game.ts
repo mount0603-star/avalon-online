@@ -87,7 +87,6 @@ export const rooms = new Map<string, RoomInternal>();
 export const IDLE_WARNING_MS = 15 * 60 * 1000;
 export const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
-const BOT_NAMES = ["蓋瑞斯", "崔斯坦", "伊蓮", "貝狄威爾", "蘭馬洛克", "艾克特", "凱", "加荷里斯"];
 const DEFAULT_BOT_AI_CONFIG: BotAiInternalConfig = {
   enabled: false,
   provider: "openai",
@@ -97,6 +96,7 @@ const DEFAULT_BOT_AI_CONFIG: BotAiInternalConfig = {
   apiKeyConfigured: false
 };
 const BOT_AI_TIMEOUT_MS = 6500;
+const BOT_NAME_PREFIX = "電腦";
 
 export function emptyGame(): GameInternal {
   return {
@@ -145,6 +145,41 @@ export function normalizeName(name: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 18) : "玩家";
 }
 
+function nextBotName(room: RoomInternal): string {
+  const usedNames = new Set(Array.from(room.players.values()).map((player) => player.name));
+  for (let index = 1; index <= MAX_PLAYERS; index += 1) {
+    const candidate = `${BOT_NAME_PREFIX}${index}`;
+    if (!usedNames.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${BOT_NAME_PREFIX}${room.players.size + 1}`;
+}
+
+function renumberBots(room: RoomInternal): void {
+  let index = 1;
+  for (const player of orderedPlayers(room)) {
+    if (!player.isBot) {
+      continue;
+    }
+    player.name = `${BOT_NAME_PREFIX}${index}`;
+    index += 1;
+  }
+}
+
+function findRejoinablePlayerByName(room: RoomInternal, name: string): PlayerInternal | null {
+  if (room.game.phase === "lobby") {
+    return null;
+  }
+  const normalized = normalizeName(name).toLocaleLowerCase("zh-TW");
+  return (
+    Array.from(room.players.values()).find(
+      (player) =>
+        player.name.toLocaleLowerCase("zh-TW") === normalized && (player.isBot || !player.connected || player.socketId === null)
+    ) || null
+  );
+}
+
 export function createRoom(name: string, existingPlayerId?: string): { room: RoomInternal; playerId: string } {
   const code = generateRoomCode();
   const playerId = existingPlayerId || randomUUID();
@@ -181,11 +216,22 @@ export function joinRoom(roomCode: string, name: string, existingPlayerId?: stri
     throw new Error("找不到這個房間。");
   }
 
+  const normalizedName = normalizeName(name);
+
   if (existingPlayerId && room.players.has(existingPlayerId)) {
     const player = room.players.get(existingPlayerId)!;
-    player.name = normalizeName(name);
+    player.name = normalizedName;
     player.connected = true;
+    player.isBot = false;
     return { room, playerId: existingPlayerId };
+  }
+
+  const reconnectingPlayer = findRejoinablePlayerByName(room, normalizedName);
+  if (reconnectingPlayer) {
+    reconnectingPlayer.connected = true;
+    reconnectingPlayer.isBot = false;
+    reconnectingPlayer.name = normalizedName;
+    return { room, playerId: reconnectingPlayer.id };
   }
 
   if (room.game.phase !== "lobby") {
@@ -199,7 +245,7 @@ export function joinRoom(roomCode: string, name: string, existingPlayerId?: stri
   const playerId = existingPlayerId || randomUUID();
   const player: PlayerInternal = {
     id: playerId,
-    name: normalizeName(name),
+    name: normalizedName,
     connected: true,
     isHost: false,
     isBot: false,
@@ -219,8 +265,7 @@ export function addBot(room: RoomInternal, hostId: string): void {
     throw new Error("房間已滿。");
   }
 
-  const usedNames = new Set(Array.from(room.players.values()).map((player) => player.name));
-  const botName = BOT_NAMES.find((name) => !usedNames.has(name)) || `電腦 ${room.players.size + 1}`;
+  const botName = nextBotName(room);
   const botId = `bot-${randomUUID()}`;
   room.players.set(botId, {
     id: botId,
@@ -235,14 +280,15 @@ export function addBot(room: RoomInternal, hostId: string): void {
 
 export function removeBot(room: RoomInternal, hostId: string, botId: string): void {
   assertHost(room, hostId);
-  if (room.game.phase !== "lobby") {
-    throw new Error("遊戲開始後不能移除電腦玩家。");
+  if (room.game.phase !== "lobby" && room.game.phase !== "finished") {
+    throw new Error("只有大廳或結算時可以移除電腦玩家。");
   }
   const bot = requirePlayer(room, botId);
   if (!bot.isBot) {
     throw new Error("只能移除電腦玩家。");
   }
   room.players.delete(botId);
+  renumberBots(room);
 }
 
 export function setLadyEnabled(room: RoomInternal, hostId: string, enabled: boolean): void {
@@ -305,6 +351,23 @@ export function setBotAiSettings(room: RoomInternal, hostId: string, settings: B
   };
 }
 
+export function updateTeamDraft(room: RoomInternal, playerId: string, teamIds: string[], excaliburHolderId?: string | null): void {
+  assertPhase(room, "team-building");
+  assertLeader(room, playerId);
+  const requiredSize = currentTeamSize(room);
+  const uniqueTeam = Array.from(new Set(teamIds)).slice(0, requiredSize);
+  for (const id of uniqueTeam) {
+    requirePlayer(room, id);
+  }
+
+  room.game.proposedTeam = uniqueTeam;
+  if (room.game.excaliburEnabled && excaliburHolderId && uniqueTeam.includes(excaliburHolderId) && excaliburHolderId !== playerId) {
+    room.game.excaliburHolderId = excaliburHolderId;
+  } else if (room.game.phase === "team-building") {
+    room.game.excaliburHolderId = null;
+  }
+}
+
 export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteRoom: boolean } {
   const player = requirePlayer(room, playerId);
 
@@ -338,6 +401,7 @@ export function attachSocket(room: RoomInternal, playerId: string, socketId: str
   const player = requirePlayer(room, playerId);
   player.socketId = socketId;
   player.connected = true;
+  player.isBot = false;
 }
 
 export function touchRoom(room: RoomInternal, now = Date.now()): void {
@@ -584,12 +648,29 @@ function resolveMission(room: RoomInternal): void {
 export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: string, announcedAllegiance?: Allegiance | null): void {
   assertPhase(room, "lady");
   const holder = requirePlayer(room, playerId);
-  const target = requirePlayer(room, targetId);
   const normalizedAnnouncement = normalizeAllegiance(announcedAllegiance);
+  const pending = room.game.ladyPendingResult;
 
   if (room.game.ladyHolderId !== holder.id) {
     throw new Error("現在不是你持有湖中女神。");
   }
+
+  if (pending && pending.fromId === holder.id && !targetId) {
+    if (!normalizedAnnouncement) {
+      return;
+    }
+    const pendingTarget = requirePlayer(room, pending.targetId);
+    finalizeLadyOfLake(room, holder, pendingTarget, pending.allegiance, normalizedAnnouncement);
+    return;
+  }
+
+  if (!pending && availableLadyTargets(room, holder.id).length === 0) {
+    room.game.phase = "team-building";
+    return;
+  }
+
+  const target = requirePlayer(room, targetId);
+
   if (target.id === holder.id) {
     throw new Error("湖中女神不能查看自己。");
   }
@@ -601,7 +682,6 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
   }
 
   const actualAllegiance = playerAllegiance(room, target);
-  const pending = room.game.ladyPendingResult;
   if (pending) {
     if (pending.fromId !== holder.id || pending.targetId !== target.id) {
       throw new Error("請先完成目前這次湖中女神宣告。");
@@ -659,6 +739,24 @@ function finalizeLadyOfLake(
   room.game.phase = "team-building";
 }
 
+function availableLadyTargets(room: RoomInternal, holderId: string): PlayerInternal[] {
+  const used = new Set(room.game.ladyUsedPlayerIds);
+  return orderedPlayers(room).filter((player) => player.id !== holderId && !used.has(player.id) && Boolean(player.role));
+}
+
+function skipLadyIfNoTargets(room: RoomInternal): boolean {
+  if (room.game.phase !== "lady" || !room.game.ladyHolderId) {
+    return false;
+  }
+  const holder = room.players.get(room.game.ladyHolderId);
+  if (!holder || availableLadyTargets(room, holder.id).length === 0) {
+    room.game.ladyPendingResult = null;
+    room.game.phase = "team-building";
+    return true;
+  }
+  return false;
+}
+
 export function assassinate(room: RoomInternal, playerId: string, targetId: string): void {
   assertPhase(room, "assassination");
   const voter = requirePlayer(room, playerId);
@@ -668,6 +766,9 @@ export function assassinate(room: RoomInternal, playerId: string, targetId: stri
   }
   if (target.id === voter.id) {
     throw new Error("不能投給自己。");
+  }
+  if (target.role && playerAllegiance(room, target) === "evil") {
+    throw new Error("不能刺殺邪惡陣營玩家。");
   }
 
   room.game.assassinationVotes[voter.id] = targetId;
@@ -692,6 +793,7 @@ export function resetRoom(room: RoomInternal, playerId: string): void {
     player.role = null;
   }
   room.game = emptyGame();
+  renumberBots(room);
 }
 
 export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
@@ -699,6 +801,12 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
   const game = room.game;
   const playerCount = room.players.size;
   const rolesAreRevealed = game.phase === "finished";
+  const publicEvilPlayerIds =
+    game.phase === "assassination" || game.phase === "finished"
+      ? orderedPlayers(room)
+          .filter((player) => player.role && playerAllegiance(room, player) === "evil")
+          .map((player) => player.id)
+      : [];
   const assassin = Array.from(room.players.values()).find((player) => player.role === "assassin") || null;
   const revealedRoles = rolesAreRevealed
     ? Object.fromEntries(Array.from(room.players.values()).map((player) => [player.id, player.role!]))
@@ -731,7 +839,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
       botOpinions: [...game.botOpinions],
       winner: game.winner,
       winReason: game.winReason,
-      assassinId: assassin?.id || null,
+      assassinId: rolesAreRevealed ? assassin?.id || null : null,
       assassinTargetId: game.assassinTargetId,
       assassinationVotesSubmitted: Object.keys(game.assassinationVotes),
       assassinationVoteCount: assassinationVoters(room).length,
@@ -752,6 +860,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
     roleKnowledge: viewer?.role ? buildKnowledge(room, viewer.id, viewer.role) : [],
     ladyResult: viewer ? game.ladyResults[viewer.id] || null : null,
     ladyPendingResult: viewer ? visibleLadyPendingResult(room, viewer) : null,
+    publicEvilPlayerIds,
     revealedRoles
   };
 }
@@ -882,12 +991,14 @@ function moveToNextQuest(room: RoomInternal): void {
 }
 
 function shouldUseLadyOfLake(room: RoomInternal, completedQuestIndex: number): boolean {
+  const holderId = room.game.ladyHolderId;
   return (
     room.game.ladyEnabled &&
     completedQuestIndex >= 1 &&
     completedQuestIndex <= 3 &&
     room.game.ladyUsedPlayerIds.length < room.players.size &&
-    Boolean(room.game.ladyHolderId)
+    Boolean(holderId) &&
+    availableLadyTargets(room, holderId!).length > 0
   );
 }
 
@@ -951,6 +1062,9 @@ function runOneBotAction(room: RoomInternal): boolean {
   }
 
   if (room.game.phase === "lady") {
+    if (skipLadyIfNoTargets(room)) {
+      return true;
+    }
     const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
     if (holder?.isBot) {
       const targetId = chooseBotLadyTarget(room, holder);
@@ -1033,6 +1147,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   }
 
   if (room.game.phase === "lady") {
+    if (skipLadyIfNoTargets(room)) {
+      return true;
+    }
     const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
     if (holder?.isBot) {
       const targetId = chooseBotLadyTarget(room, holder);
@@ -1236,7 +1353,7 @@ function chooseBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): stri
 }
 
 function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): string {
-  const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id);
+  const candidates = orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "good");
   const scored = candidates.map((player, index) => {
     let score = 0;
     score += assassinationReadScore(room, player);
@@ -1254,8 +1371,7 @@ function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): 
 }
 
 function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
-  const used = new Set(room.game.ladyUsedPlayerIds);
-  const candidates = orderedPlayers(room).filter((player) => player.id !== bot.id && !used.has(player.id));
+  const candidates = availableLadyTargets(room, bot.id);
 
   if (bot.role && playerAllegiance(room, bot) === "evil") {
     const goodTargets = candidates.filter((player) => player.role && playerAllegiance(room, player) === "good");
@@ -1370,8 +1486,9 @@ async function chooseApiBotAssassinationTarget(room: RoomInternal, bot: PlayerIn
     return null;
   }
   const decision = await requestBotAiDecision(room, bot, "assassination");
-  if (decision?.targetId && room.players.has(decision.targetId) && decision.targetId !== bot.id) {
-    return decision.targetId;
+  const target = decision?.targetId ? room.players.get(decision.targetId) : null;
+  if (target?.role && playerAllegiance(room, target) === "good") {
+    return target.id;
   }
   return null;
 }
@@ -1869,7 +1986,7 @@ function visibleLadyPendingResult(room: RoomInternal, viewer: PlayerInternal): L
 }
 
 function normalizeBotAiProvider(provider: BotAiProvider): BotAiProvider {
-  if (provider === "openai" || provider === "deepseek" || provider === "custom") {
+  if (provider === "openai" || provider === "deepseek" || provider === "gemini" || provider === "custom") {
     return provider;
   }
   return "openai";
@@ -1879,6 +1996,9 @@ function normalizeBotAiBaseUrl(provider: BotAiProvider, baseUrl?: string): strin
   const cleaned = baseUrl?.trim().replace(/\/+$/, "");
   if (provider === "deepseek") {
     return cleaned || "https://api.deepseek.com";
+  }
+  if (provider === "gemini") {
+    return cleaned || "https://generativelanguage.googleapis.com/v1beta/openai";
   }
   if (provider === "custom") {
     return cleaned || "https://api.openai.com/v1";
@@ -1891,7 +2011,13 @@ function normalizeBotAiModel(provider: BotAiProvider, model?: string): string {
   if (cleaned) {
     return cleaned.slice(0, 80);
   }
-  return provider === "deepseek" ? "deepseek-chat" : "gpt-5-mini";
+  if (provider === "deepseek") {
+    return "deepseek-chat";
+  }
+  if (provider === "gemini") {
+    return "gemini-2.5-flash";
+  }
+  return "gpt-5-mini";
 }
 
 function normalizeAllegiance(value: unknown): Allegiance | null {

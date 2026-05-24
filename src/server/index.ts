@@ -27,6 +27,7 @@ import {
   setLancelotEnabled,
   startGame,
   touchRoom,
+  updateTeamDraft,
   useExcalibur,
   useLadyOfLake
 } from "./game";
@@ -107,6 +108,9 @@ io.on("connection", (socket) => {
   socket.on("setLancelotEnabled", (enabled) => runAction(socket, (room, playerId) => setLancelotEnabled(room, playerId, enabled)));
   socket.on("setExcaliburEnabled", (enabled) => runAction(socket, (room, playerId) => setExcaliburEnabled(room, playerId, enabled)));
   socket.on("setBotAiSettings", (settings) => runAction(socket, (room, playerId) => setBotAiSettings(room, playerId, settings)));
+  socket.on("updateTeamDraft", (teamIds, excaliburHolderId) =>
+    runAction(socket, (room, playerId) => updateTeamDraft(room, playerId, teamIds, excaliburHolderId))
+  );
   socket.on("proposeTeam", (teamIds, excaliburHolderId) =>
     runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds, excaliburHolderId))
   );

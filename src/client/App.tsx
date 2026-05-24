@@ -8,6 +8,7 @@ import {
   Crown,
   Eye,
   Flag,
+  Hourglass,
   LogIn,
   LogOut,
   Plus,
@@ -131,6 +132,11 @@ const botAiDefaults: Record<BotAiProvider, { label: string; baseUrl: string; mod
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     model: "deepseek-chat"
+  },
+  gemini: {
+    label: "Gemini",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-2.5-flash"
   },
   custom: {
     label: "自訂相容 API",
@@ -414,6 +420,7 @@ function LobbyRoomList({ rooms }: { rooms: LobbyRoomSummary[] }) {
 
 function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onLeave: () => void }) {
   const isHost = room.you?.isHost ?? false;
+  const isLobby = room.game.phase === "lobby";
   const [teamDraft, setTeamDraft] = useState<string[]>([]);
   const [excaliburHolderId, setExcaliburHolderId] = useState<string | null>(null);
   const isTeamDrafting = room.game.phase === "team-building" && room.you?.id === room.game.leaderId;
@@ -423,6 +430,14 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
     setTeamDraft([]);
     setExcaliburHolderId(null);
   }, [room.roomCode, room.game.phase, room.game.questIndex, room.game.leaderId, room.game.teamSize]);
+
+  useEffect(() => {
+    if (room.game.phase !== "team-building") {
+      return;
+    }
+    setTeamDraft(room.game.proposedTeam);
+    setExcaliburHolderId(room.game.excaliburHolderId);
+  }, [room.game.phase, room.game.proposedTeam, room.game.excaliburHolderId]);
 
   useEffect(() => {
     if (excaliburHolderId && !excaliburCandidates.includes(excaliburHolderId)) {
@@ -435,15 +450,30 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
       return;
     }
     setTeamDraft((current) => {
+      let next: string[];
       if (current.includes(playerId)) {
-        return current.filter((id) => id !== playerId);
+        next = current.filter((id) => id !== playerId);
+      } else if (current.length >= room.game.teamSize) {
+        next = current;
+      } else {
+        next = [...current, playerId];
       }
-      if (current.length >= room.game.teamSize) {
-        return current;
+      if (excaliburHolderId && !next.includes(excaliburHolderId)) {
+        setExcaliburHolderId(null);
       }
-      return [...current, playerId];
+      return next;
     });
   }
+
+  useEffect(() => {
+    if (!isTeamDrafting) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      socket.emit("updateTeamDraft", teamDraft, excaliburHolderId);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [isTeamDrafting, teamDraft, excaliburHolderId]);
 
   return (
     <section className="room-layout">
@@ -472,9 +502,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
 
       {error ? <p className="error-line">{error}</p> : null}
 
-      <QuickVoteBar room={room} />
-
-      <div className="game-grid">
+      <div className={isLobby ? "game-grid lobby-game-grid" : "game-grid active-game-grid"}>
         <aside className="side-panel">
           <PlayerList room={room} teamDraft={teamDraft} onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined} />
           <HostControls room={room} />
@@ -482,6 +510,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
 
         <section className="play-panel">
           <RoleCard room={room} />
+          {room.game.phase === "assassination" ? <PublicEvilReveal room={room} /> : null}
           <MissionBoard room={room} />
           <PhasePanel
             room={room}
@@ -490,15 +519,21 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
             excaliburHolderId={excaliburHolderId}
             setExcaliburHolderId={setExcaliburHolderId}
           />
+          {isHost && room.game.phase === "finished" ? <ResetControl /> : null}
         </section>
 
-        <aside className="side-panel">
-          <VoteHistory room={room} />
-          <LadyHistory room={room} />
-          <BotOpinions room={room} />
-          <RolePreview room={room} compact={room.game.phase !== "lobby"} />
-          {isHost && room.game.phase === "finished" ? <ResetControl /> : null}
-        </aside>
+        {isLobby ? (
+          <aside className="side-panel">
+            <VoteHistory room={room} />
+            <LadyHistory room={room} />
+            <BotOpinions room={room} />
+            <RolePreview room={room} />
+          </aside>
+        ) : (
+          <aside className="side-panel status-side-panel">
+            <CompactStatusPanel room={room} />
+          </aside>
+        )}
       </div>
     </section>
   );
@@ -533,7 +568,7 @@ function PlayerList({
   onToggleTeamDraft?: (playerId: string) => void;
 }) {
   const leaderId = room.game.leaderId;
-  const canRemoveBots = room.you?.isHost && room.game.phase === "lobby";
+  const canRemoveBots = room.you?.isHost && (room.game.phase === "lobby" || room.game.phase === "finished");
   const displayedPlayers = orderedRoomPlayers(room);
   return (
     <div className="panel-block">
@@ -549,9 +584,13 @@ function PlayerList({
           const isDraftMember = teamDraft?.includes(player.id) ?? false;
           const isQuestMember = room.game.proposedTeam.includes(player.id) || isDraftMember;
           const isLadyHolder = room.game.ladyEnabled && room.game.ladyHolderId === player.id;
+          const isPendingTeamVote = room.game.phase === "team-vote" && !room.game.teamVotesSubmitted.includes(player.id);
+          const isPendingMissionVote =
+            room.game.phase === "mission" && room.game.proposedTeam.includes(player.id) && !room.game.missionVotesSubmitted.includes(player.id);
           const orderIndex = seatOrderIndex(room, player.id);
           const cardClass = playerSeatClass(room, player, isDraftMember, Boolean(onToggleTeamDraft));
           const cardStyle = visibleRole ? roleCardStyle(visibleRole, roleVariantIndexForPlayer(room, player.id, visibleRole)) : undefined;
+          const pendingLabel = isPendingTeamVote ? "尚未表決" : isPendingMissionVote ? "尚未送出任務" : null;
           return (
             <div
               className={cardClass}
@@ -595,6 +634,11 @@ function PlayerList({
                   </span>
                 ) : null}
               </div>
+              {pendingLabel ? (
+                <span className="seat-pending-mark" title={pendingLabel} aria-label={pendingLabel}>
+                  <Hourglass size={16} />
+                </span>
+              ) : null}
               <div className="seat-card-face">
                 <span className={player.connected ? "status-dot online-dot" : "status-dot offline-dot"} />
                 <div className="seat-name">{player.name}</div>
@@ -610,6 +654,8 @@ function PlayerList({
               {canRemoveBots && player.isBot ? (
                 <button
                   className="mini-icon-button"
+                  type="button"
+                  title={`移除 ${player.name}`}
                   aria-label={`移除 ${player.name}`}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -811,6 +857,7 @@ function MissionBoard({ room }: { room: RoomView }) {
           <Flag size={17} />
           任務盤
         </div>
+        <BoardRoundStatus room={room} />
         <div className="score-runes" aria-label="任務勝敗">
           <span className="score-good">{successCount}</span>
           <small>:</small>
@@ -863,6 +910,68 @@ function MissionBoard({ room }: { room: RoomView }) {
   );
 }
 
+function BoardRoundStatus({ room }: { room: RoomView }) {
+  if (room.game.phase === "team-building" && room.game.proposedTeam.length > 0) {
+    return (
+      <div className="board-round-status">
+        <strong>預選隊伍</strong>
+        <span>
+          {room.game.proposedTeam.length}/{room.game.teamSize}
+        </span>
+        <small>{room.game.proposedTeam.map((id) => playerName(room, id)).join("、")}</small>
+      </div>
+    );
+  }
+
+  if (room.game.phase === "team-vote") {
+    const pending = room.players.filter((player) => !room.game.teamVotesSubmitted.includes(player.id));
+    return (
+      <div className="board-round-status vote-status">
+        <strong>隊伍表決</strong>
+        <span>
+          已投 {room.game.teamVotesSubmitted.length}/{room.players.length}
+        </span>
+        <small>{pending.length > 0 ? `未投：${pending.map((player) => player.name).join("、")}` : "全員已投"}</small>
+      </div>
+    );
+  }
+
+  if (room.game.phase === "mission") {
+    const pending = room.game.proposedTeam.filter((id) => !room.game.missionVotesSubmitted.includes(id));
+    return (
+      <div className="board-round-status mission-status">
+        <strong>任務送出</strong>
+        <span>
+          已送出 {room.game.missionVotesSubmitted.length}/{room.game.proposedTeam.length}
+        </span>
+        <small>{pending.length > 0 ? `未送出：${pending.map((id) => playerName(room, id)).join("、")}` : "任務卡已收齊"}</small>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function PublicEvilReveal({ room }: { room: RoomView }) {
+  if (room.publicEvilPlayerIds.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="action-panel evil-reveal-panel">
+      <h2>邪惡陣營公開</h2>
+      <p>好人完成三次任務。現在只公開邪惡陣營，邪惡方要共同猜誰是梅林。</p>
+      <div className="team-strip">
+        {room.publicEvilPlayerIds.map((id) => (
+          <span className="evil-chip" key={id}>
+            {playerName(room, id)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RoleCard({ room }: { room: RoomView }) {
   if (room.game.phase === "lobby") {
     return (
@@ -886,37 +995,56 @@ function RoleCard({ room }: { room: RoomView }) {
   const switchedSide = currentSide !== role.allegiance;
   return (
     <div className={`identity-panel ${currentSide === "good" ? "identity-good" : "identity-evil"}`}>
-      <div className="role-portrait card-art" style={roleCardStyle(room.yourRole, roleVariantIndexForPlayer(room, room.you?.id || "", room.yourRole))} />
-      <div>
-        <span>{side}</span>
-        <h2>{role.name}</h2>
-        <p>{role.summary}</p>
-        {switchedSide ? (
-          <div className="knowledge-line lancelot-note">
-            <RotateCcw size={16} />
-            <strong>目前忠誠</strong>
-            <span>蘭斯洛特忠誠牌已讓你改為{currentSide === "good" ? "亞瑟陣營" : "邪惡陣營"}</span>
-          </div>
-        ) : null}
-        {room.roleKnowledge.map((knowledge) => (
-          <div className="knowledge-line" key={knowledge.label}>
-            <Eye size={16} />
-            <strong>{knowledge.label}</strong>
-            <span>{knowledge.playerIds.length > 0 ? knowledge.playerIds.map((id) => playerName(room, id)).join("、") : "無"}</span>
-          </div>
-        ))}
-        {room.ladyResult ? (
-          <div className="knowledge-line lady-result">
-            <Waves size={16} />
-            <strong>湖中女神結果</strong>
-            <span>
-              {playerName(room, room.ladyResult.targetId)} 是{room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
-            </span>
-          </div>
-        ) : null}
+      <div className="identity-main">
+        <div className="role-portrait card-art" style={roleCardStyle(room.yourRole, roleVariantIndexForPlayer(room, room.you?.id || "", room.yourRole))} />
+        <div className="identity-copy">
+          <span>{side}</span>
+          <h2>{role.name}</h2>
+          <p>{roleBrief(room.yourRole)}</p>
+          {switchedSide ? (
+            <div className="knowledge-line lancelot-note">
+              <RotateCcw size={16} />
+              <strong>目前忠誠</strong>
+              <span>蘭斯洛特忠誠牌已讓你改為{currentSide === "good" ? "亞瑟陣營" : "邪惡陣營"}</span>
+            </div>
+          ) : null}
+          {room.roleKnowledge.map((knowledge) => (
+            <div className="knowledge-line" key={knowledge.label}>
+              <Eye size={16} />
+              <strong>{knowledge.label}</strong>
+              <span>{knowledge.playerIds.length > 0 ? knowledge.playerIds.map((id) => playerName(room, id)).join("、") : "無"}</span>
+            </div>
+          ))}
+          {room.ladyResult ? (
+            <div className="knowledge-line lady-result">
+              <Waves size={16} />
+              <strong>湖中女神結果</strong>
+              <span>
+                {playerName(room, room.ladyResult.targetId)} 是{room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
+              </span>
+            </div>
+          ) : null}
+        </div>
       </div>
+      <InlineTurnAction room={room} />
     </div>
   );
+}
+
+function roleBrief(roleId: RoleId): string {
+  const briefs: Record<RoleId, string> = {
+    merlin: "知道多數邪惡玩家；別讓刺客看出你。",
+    percival: "看見梅林候選；保護真正的梅林。",
+    loyal: "無額外情報，靠表決與任務紀錄判斷。",
+    lancelotGood: "目前為亞瑟陣營；忠誠牌可能改變你。",
+    assassin: "邪惡陣營；好人三勝後共同刺殺梅林。",
+    morgana: "邪惡陣營；會混入派西維爾的梅林候選。",
+    mordred: "邪惡陣營；梅林看不見你。",
+    oberon: "邪惡陣營；你不與其他壞人互認。",
+    lancelotEvil: "目前為邪惡陣營；忠誠牌可能改變你。",
+    minion: "邪惡陣營；支援同夥破壞任務。"
+  };
+  return briefs[roleId];
 }
 
 function PhasePanel({
@@ -938,10 +1066,10 @@ function PhasePanel({
     return <TeamBuilder room={room} selected={teamDraft} excaliburHolderId={excaliburHolderId} setExcaliburHolderId={setExcaliburHolderId} />;
   }
   if (room.game.phase === "team-vote") {
-    return <TeamVote room={room} />;
+    return null;
   }
   if (room.game.phase === "mission") {
-    return <MissionVote room={room} />;
+    return null;
   }
   if (room.game.phase === "excalibur") {
     return <ExcaliburPanel room={room} />;
@@ -960,6 +1088,7 @@ function LadyOfLake({ room }: { room: RoomView }) {
   const isHolder = room.game.ladyHolderId === youId;
   const candidates = room.players.filter((player) => player.id !== youId && !room.game.ladyUsedPlayerIds.includes(player.id));
   const pending = room.ladyPendingResult;
+  const canChooseTarget = isHolder && !pending && candidates.length > 0;
 
   return (
     <div className="action-panel lake-panel">
@@ -988,7 +1117,7 @@ function LadyOfLake({ room }: { room: RoomView }) {
           {room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
         </p>
       ) : null}
-      {isHolder && !pending ? (
+      {canChooseTarget ? (
         <div className="select-grid">
           {candidates.map((player) => (
             <button className="select-player" key={player.id} onClick={() => socket.emit("useLadyOfLake", player.id)}>
@@ -996,6 +1125,14 @@ function LadyOfLake({ room }: { room: RoomView }) {
               {player.name}
             </button>
           ))}
+        </div>
+      ) : isHolder && !pending ? (
+        <div className="button-row">
+          <p className="waiting-line">目前沒有可查看的目標，可以直接進入下一輪組隊。</p>
+          <button className="secondary-button" onClick={() => socket.emit("useLadyOfLake", "", null)}>
+            <RotateCcw size={18} />
+            繼續
+          </button>
         </div>
       ) : !pending ? (
         <p className="waiting-line">等待持有者使用湖中女神。</p>
@@ -1109,16 +1246,7 @@ function TeamVote({ room }: { room: RoomView }) {
       {voted ? (
         <p className="waiting-line">你已投票，等待其他玩家。</p>
       ) : (
-        <div className="button-row vote-choice-row">
-          <button className="primary-button vote-choice-card" onClick={() => socket.emit("castTeamVote", true)}>
-            <Check size={18} />
-            贊成
-          </button>
-          <button className="danger-button vote-choice-card" onClick={() => socket.emit("castTeamVote", false)}>
-            <X size={18} />
-            反對
-          </button>
-        </div>
+        <p className="waiting-line">請在身份卡右側投票。</p>
       )}
     </div>
   );
@@ -1133,26 +1261,30 @@ function MissionVote({ room }: { room: RoomView }) {
   return (
     <div className="action-panel">
       <h2>任務執行</h2>
-      <TeamNames room={room} />
+      <MissionSubmitStatus room={room} />
       <p className="muted-line">
         已提交 {room.game.missionVotesSubmitted.length}/{room.game.proposedTeam.length}
       </p>
       {!isOnTeam ? <p className="waiting-line">你不在任務隊伍中，等待結果。</p> : null}
       {isOnTeam && submitted ? <p className="waiting-line">你已提交任務結果。</p> : null}
-      {isOnTeam && !submitted ? (
-        <div className="button-row">
-          <button className="primary-button" onClick={() => socket.emit("castMissionVote", true)}>
-            <Check size={18} />
-            任務成功
-          </button>
-          {canFail ? (
-            <button className="danger-button" onClick={() => socket.emit("castMissionVote", false)}>
-              <X size={18} />
-              任務失敗
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      {isOnTeam && !submitted ? <p className="waiting-line">{canFail ? "請在身份卡右側選擇成功或失敗。" : "請在身份卡右側送出任務成功。"}</p> : null}
+    </div>
+  );
+}
+
+function MissionSubmitStatus({ room }: { room: RoomView }) {
+  return (
+    <div className="vote-team-grid mission-submit-grid">
+      {room.game.proposedTeam.map((id) => {
+        const submitted = room.game.missionVotesSubmitted.includes(id);
+        return (
+          <div className={submitted ? "vote-team-card mission-submitted" : "vote-team-card mission-pending"} key={id}>
+            {submitted ? <Check size={18} /> : <Clock size={18} />}
+            <strong>{playerName(room, id)}</strong>
+            <span>{submitted ? "已送出" : "尚未送出"}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1211,7 +1343,7 @@ function Assassination({ room }: { room: RoomView }) {
       {canVote && !voted ? (
         <div className="select-grid">
           {room.players
-            .filter((player) => player.id !== youId)
+            .filter((player) => !room.publicEvilPlayerIds.includes(player.id))
             .map((player) => (
               <button className="select-player" key={player.id} onClick={() => socket.emit("assassinate", player.id)}>
                 <Target size={18} />
@@ -1308,9 +1440,22 @@ function RoleGallery({ roles }: { roles: RoleId[] }) {
   );
 }
 
-function BotOpinions({ room }: { room: RoomView }) {
+function BotOpinions({ room, embedded = false }: { room: RoomView; embedded?: boolean }) {
   if (room.game.botOpinions.length === 0) {
     return null;
+  }
+
+  if (embedded) {
+    return (
+      <div className="history-list embedded-history">
+        {room.game.botOpinions.slice(-4).map((opinion) => (
+          <div className="bot-opinion-row" key={opinion.id}>
+            <strong>{playerName(room, opinion.playerId)}</strong>
+            <span>{opinion.message}</span>
+          </div>
+        ))}
+      </div>
+    );
   }
 
   return (
@@ -1334,46 +1479,73 @@ function BotOpinions({ room }: { room: RoomView }) {
   );
 }
 
-function VoteHistory({ room }: { room: RoomView }) {
+function VoteHistory({ room, embedded = false }: { room: RoomView; embedded?: boolean }) {
+  const content = (
+    <div className="history-list detailed-history">
+      {room.game.voteHistory.length === 0 ? <p className="muted-line">尚無紀錄</p> : null}
+      {room.game.voteHistory.slice(-5).map((vote) => (
+        <div className="history-row" key={vote.round}>
+          <div className="history-head">
+            <strong>#{vote.round}</strong>
+            <span>{vote.approved ? "通過" : "否決"}</span>
+            <small>
+              {vote.approvals.length}:{vote.rejections.length}
+            </small>
+          </div>
+          <p>隊長：{playerName(room, vote.leaderId)}</p>
+          <p>隊伍：{vote.team.map((id) => playerName(room, id)).join("、")}</p>
+          <div className="vote-split">
+            <div>
+              <b>贊成</b>
+              <span>{vote.approvals.map((id) => playerName(room, id)).join("、") || "無"}</span>
+            </div>
+            <div>
+              <b>反對</b>
+              <span>{vote.rejections.map((id) => playerName(room, id)).join("、") || "無"}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
   return (
     <div className="panel-block">
       <div className="panel-title">
         <Vote size={17} />
         表決紀錄
       </div>
-      <div className="history-list detailed-history">
-        {room.game.voteHistory.length === 0 ? <p className="muted-line">尚無紀錄</p> : null}
-        {room.game.voteHistory.slice(-5).map((vote) => (
-          <div className="history-row" key={vote.round}>
-            <div className="history-head">
-              <strong>#{vote.round}</strong>
-              <span>{vote.approved ? "通過" : "否決"}</span>
-              <small>
-                {vote.approvals.length}:{vote.rejections.length}
-              </small>
-            </div>
-            <p>隊長：{playerName(room, vote.leaderId)}</p>
-            <p>隊伍：{vote.team.map((id) => playerName(room, id)).join("、")}</p>
-            <div className="vote-split">
-              <div>
-                <b>贊成</b>
-                <span>{vote.approvals.map((id) => playerName(room, id)).join("、") || "無"}</span>
-              </div>
-              <div>
-                <b>反對</b>
-                <span>{vote.rejections.map((id) => playerName(room, id)).join("、") || "無"}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+      {content}
     </div>
   );
 }
 
-function LadyHistory({ room }: { room: RoomView }) {
+function LadyHistory({ room, embedded = false }: { room: RoomView; embedded?: boolean }) {
   if (!room.game.ladyEnabled) {
     return null;
+  }
+
+  const content = (
+    <div className="history-list">
+      {room.game.ladyInspections.length === 0 ? <p className="muted-line">尚未使用</p> : null}
+      {room.game.ladyInspections.map((inspection, index) => (
+        <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
+          <strong>#{index + 1}</strong>
+          <span className="lady-history-main">
+            {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
+            {inspection.announcedAllegiance ? <em>宣稱{inspection.announcedAllegiance === "good" ? "好人" : "邪惡"}</em> : null}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+
+  if (embedded) {
+    return content;
   }
 
   return (
@@ -1382,18 +1554,7 @@ function LadyHistory({ room }: { room: RoomView }) {
         <Waves size={17} />
         湖中女神紀錄
       </div>
-      <div className="history-list">
-        {room.game.ladyInspections.length === 0 ? <p className="muted-line">尚未使用</p> : null}
-        {room.game.ladyInspections.map((inspection, index) => (
-          <div className="lady-history-row" key={`${inspection.fromId}-${inspection.targetId}-${index}`}>
-            <strong>#{index + 1}</strong>
-            <span className="lady-history-main">
-              {playerName(room, inspection.fromId)} 查看 {playerName(room, inspection.targetId)}
-              {inspection.announcedAllegiance ? <em>宣稱{inspection.announcedAllegiance === "good" ? "好人" : "邪惡"}</em> : null}
-            </span>
-          </div>
-        ))}
-      </div>
+      {content}
     </div>
   );
 }
@@ -1408,17 +1569,50 @@ function TeamNames({ room }: { room: RoomView }) {
   );
 }
 
-function QuickVoteBar({ room }: { room: RoomView }) {
+function InlineTurnAction({ room }: { room: RoomView }) {
   const youId = room.you?.id || "";
   const isVoting = room.game.phase === "team-vote";
+  const isMission = room.game.phase === "mission";
   const voted = room.game.teamVotesSubmitted.includes(youId);
-  if (!isVoting) {
+  const onMission = room.game.proposedTeam.includes(youId);
+  const missionSubmitted = room.game.missionVotesSubmitted.includes(youId);
+  if (!isVoting && !isMission) {
     return null;
   }
 
+  if (isMission) {
+    return (
+      <div className="inline-turn-action inline-mission-action">
+        <div className="inline-action-summary">
+          <strong>任務執行</strong>
+          <span>{room.game.proposedTeam.map((id) => playerName(room, id)).join("、")}</span>
+          <small>
+            已送出 {room.game.missionVotesSubmitted.length}/{room.game.proposedTeam.length}
+          </small>
+        </div>
+        {onMission && !missionSubmitted ? (
+          <div className="inline-action-buttons">
+            <button className="primary-button" onClick={() => socket.emit("castMissionVote", true)}>
+              <Check size={18} />
+              成功
+            </button>
+            {room.yourAllegiance === "evil" ? (
+              <button className="danger-button" onClick={() => socket.emit("castMissionVote", false)}>
+                <X size={18} />
+                失敗
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <span className="inline-action-waiting">{missionSubmitted ? "已送出" : "等待隊員"}</span>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="quick-vote-bar">
-      <div className="quick-vote-summary">
+    <div className="inline-turn-action">
+      <div className="inline-action-summary">
         <strong>隊伍表決</strong>
         <span>{room.game.proposedTeam.map((id) => playerName(room, id)).join("、")}</span>
         <small>
@@ -1426,9 +1620,9 @@ function QuickVoteBar({ room }: { room: RoomView }) {
         </small>
       </div>
       {voted ? (
-        <span className="quick-vote-waiting">已投票</span>
+        <span className="inline-action-waiting">已投票</span>
       ) : (
-        <div className="quick-vote-actions">
+        <div className="inline-action-buttons">
           <button className="primary-button" onClick={() => socket.emit("castTeamVote", true)}>
             <Check size={18} />
             贊成
@@ -1456,6 +1650,46 @@ function TeamVoteCards({ room }: { room: RoomView }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function CompactStatusPanel({ room }: { room: RoomView }) {
+  return (
+    <div className="action-panel compact-status-panel">
+      <div>
+        <h2>本局資訊</h2>
+        <div className="status-chip-row">
+          <span>
+            <Vote size={15} />
+            表決 {room.game.voteHistory.length}
+          </span>
+          <span>
+            <Waves size={15} />
+            女神 {room.game.ladyInspections.length}
+          </span>
+          <span>
+            <Bot size={15} />
+            電腦意見 {room.game.botOpinions.length}
+          </span>
+        </div>
+      </div>
+      <details open={room.game.voteHistory.length > 0}>
+        <summary>表決紀錄</summary>
+        <VoteHistory room={room} embedded />
+      </details>
+      {room.game.ladyEnabled ? (
+        <details open={room.game.ladyInspections.length > 0}>
+          <summary>湖中女神紀錄</summary>
+          <LadyHistory room={room} embedded />
+        </details>
+      ) : null}
+      {room.game.botOpinions.length > 0 ? (
+        <details open>
+          <summary>電腦意見</summary>
+          <BotOpinions room={room} embedded />
+        </details>
+      ) : null}
     </div>
   );
 }
