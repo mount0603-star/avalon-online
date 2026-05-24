@@ -24,7 +24,7 @@ import {
   X
 } from "lucide-react";
 import { socket } from "./socket";
-import type { LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
+import type { BotAiProvider, LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
 import roleCardsUrl from "./assets/role-cards.png";
 import councilHallUrl from "./assets/council-hall.png";
 import lancelotGoodUrl from "./assets/lancelot-good.png";
@@ -110,6 +110,24 @@ const questFailThresholds: Record<number, number[]> = {
   8: [1, 1, 1, 2, 1],
   9: [1, 1, 1, 2, 1],
   10: [1, 1, 1, 2, 1]
+};
+
+const botAiDefaults: Record<BotAiProvider, { label: string; baseUrl: string; model: string }> = {
+  openai: {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-5-mini"
+  },
+  deepseek: {
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-v4-flash"
+  },
+  custom: {
+    label: "自訂相容 API",
+    baseUrl: "",
+    model: ""
+  }
 };
 
 export function App() {
@@ -448,6 +466,8 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
 
       {error ? <p className="error-line">{error}</p> : null}
 
+      <QuickVoteBar room={room} />
+
       <div className="game-grid">
         <aside className="side-panel">
           <PlayerList room={room} teamDraft={teamDraft} onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined} />
@@ -508,6 +528,7 @@ function PlayerList({
 }) {
   const leaderId = room.game.leaderId;
   const canRemoveBots = room.you?.isHost && room.game.phase === "lobby";
+  const displayedPlayers = orderedRoomPlayers(room);
   return (
     <div className="panel-block">
       <div className="panel-title">
@@ -515,7 +536,7 @@ function PlayerList({
         玩家 {room.players.length}/{MAX_PLAYERS}
       </div>
       <div className="seat-grid">
-        {room.players.map((player) => {
+        {displayedPlayers.map((player) => {
           const badge = intelBadge(room, player.id);
           const isLeader = leaderId === player.id;
           const isDraftMember = teamDraft?.includes(player.id) ?? false;
@@ -654,6 +675,7 @@ function HostControls({ room }: { room: RoomView }) {
           王者之劍
         </span>
       </label>
+      <BotAiSettings room={room} />
       <button className="secondary-button full-button" disabled={room.players.length >= MAX_PLAYERS} onClick={() => socket.emit("addBot")}>
         <Bot size={18} />
         新增電腦
@@ -663,6 +685,98 @@ function HostControls({ room }: { room: RoomView }) {
         開始遊戲
       </button>
     </div>
+  );
+}
+
+function BotAiSettings({ room }: { room: RoomView }) {
+  const [enabled, setEnabled] = useState(room.botAiSetting.enabled);
+  const [provider, setProvider] = useState<BotAiProvider>(room.botAiSetting.provider);
+  const [baseUrl, setBaseUrl] = useState(room.botAiSetting.baseUrl);
+  const [model, setModel] = useState(room.botAiSetting.model);
+  const [apiKey, setApiKey] = useState("");
+
+  useEffect(() => {
+    setEnabled(room.botAiSetting.enabled);
+    setProvider(room.botAiSetting.provider);
+    setBaseUrl(room.botAiSetting.baseUrl);
+    setModel(room.botAiSetting.model);
+    setApiKey("");
+  }, [room.roomCode, room.botAiSetting.enabled, room.botAiSetting.provider, room.botAiSetting.baseUrl, room.botAiSetting.model]);
+
+  function updateProvider(nextProvider: BotAiProvider) {
+    setProvider(nextProvider);
+    const defaults = botAiDefaults[nextProvider];
+    if (defaults.baseUrl) {
+      setBaseUrl(defaults.baseUrl);
+    }
+    if (defaults.model) {
+      setModel(defaults.model);
+    }
+  }
+
+  function saveSettings() {
+    socket.emit("setBotAiSettings", {
+      enabled,
+      provider,
+      baseUrl,
+      model,
+      apiKey: apiKey.trim() || undefined
+    });
+  }
+
+  return (
+    <details className="bot-ai-config">
+      <summary>
+        <span>
+          <Bot size={17} />
+          API 電腦
+        </span>
+        <b>{room.botAiSetting.enabled ? "已開啟" : "規則 AI"}</b>
+      </summary>
+      <div className="bot-ai-fields">
+        <label className="toggle-row">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.currentTarget.checked)} />
+          <span className="toggle-track" />
+          <span className="toggle-label">用 API 強化電腦</span>
+        </label>
+        <label>
+          服務
+          <select value={provider} disabled={!enabled} onChange={(event) => updateProvider(event.currentTarget.value as BotAiProvider)}>
+            {Object.entries(botAiDefaults).map(([value, config]) => (
+              <option value={value} key={value}>
+                {config.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Base URL
+          <input value={baseUrl} disabled={!enabled} onChange={(event) => setBaseUrl(event.currentTarget.value)} placeholder="https://api.openai.com/v1" />
+        </label>
+        <label>
+          Model
+          <input value={model} disabled={!enabled} onChange={(event) => setModel(event.currentTarget.value)} placeholder="gpt-5-mini" />
+        </label>
+        <label>
+          API Key
+          <input
+            value={apiKey}
+            disabled={!enabled}
+            type="password"
+            autoComplete="off"
+            onChange={(event) => setApiKey(event.currentTarget.value)}
+            placeholder={room.botAiSetting.apiKeyConfigured ? "已設定，留空沿用" : "貼上 API Key"}
+          />
+        </label>
+        <p className="bot-ai-note">
+          {room.botAiSetting.apiKeyConfigured ? "Key 已存在伺服器記憶體，不會回傳到玩家畫面。" : "未填 Key 時會維持本機規則 AI。"}
+        </p>
+        <button className="secondary-button full-button" type="button" onClick={saveSettings}>
+          <Check size={17} />
+          套用電腦設定
+        </button>
+      </div>
+    </details>
   );
 }
 
@@ -981,19 +1095,19 @@ function TeamVote({ room }: { room: RoomView }) {
   return (
     <div className="action-panel">
       <h2>隊伍表決</h2>
-      <TeamNames room={room} />
+      <TeamVoteCards room={room} />
       <p className="muted-line">
         已投票 {room.game.teamVotesSubmitted.length}/{room.players.length}
       </p>
       {voted ? (
         <p className="waiting-line">你已投票，等待其他玩家。</p>
       ) : (
-        <div className="button-row">
-          <button className="primary-button" onClick={() => socket.emit("castTeamVote", true)}>
+        <div className="button-row vote-choice-row">
+          <button className="primary-button vote-choice-card" onClick={() => socket.emit("castTeamVote", true)}>
             <Check size={18} />
             贊成
           </button>
-          <button className="danger-button" onClick={() => socket.emit("castTeamVote", false)}>
+          <button className="danger-button vote-choice-card" onClick={() => socket.emit("castTeamVote", false)}>
             <X size={18} />
             反對
           </button>
@@ -1175,7 +1289,9 @@ function RoleGallery({ roles }: { roles: RoleId[] }) {
         const role = ROLE_DEFINITIONS[roleId];
         return (
           <div className={`role-gallery-card ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={`${role.id}-${index}`}>
-            <span className={`role-gallery-art card-thumb card-art-${role.id}`}>{roleMark[role.id]}</span>
+            <span className={`role-gallery-art card-thumb card-art-${role.id}`} data-mark={roleMark[role.id]}>
+              {roleMark[role.id]}
+            </span>
             <strong>{role.shortName}</strong>
           </div>
         );
@@ -1282,6 +1398,68 @@ function TeamNames({ room }: { room: RoomView }) {
       ))}
     </div>
   );
+}
+
+function QuickVoteBar({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const isVoting = room.game.phase === "team-vote";
+  const voted = room.game.teamVotesSubmitted.includes(youId);
+  if (!isVoting) {
+    return null;
+  }
+
+  return (
+    <div className="quick-vote-bar">
+      <div className="quick-vote-summary">
+        <strong>隊伍表決</strong>
+        <span>{room.game.proposedTeam.map((id) => playerName(room, id)).join("、")}</span>
+        <small>
+          已投票 {room.game.teamVotesSubmitted.length}/{room.players.length}
+        </small>
+      </div>
+      {voted ? (
+        <span className="quick-vote-waiting">已投票</span>
+      ) : (
+        <div className="quick-vote-actions">
+          <button className="primary-button" onClick={() => socket.emit("castTeamVote", true)}>
+            <Check size={18} />
+            贊成
+          </button>
+          <button className="danger-button" onClick={() => socket.emit("castTeamVote", false)}>
+            <X size={18} />
+            反對
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamVoteCards({ room }: { room: RoomView }) {
+  return (
+    <div className="vote-team-grid">
+      {room.game.proposedTeam.map((id) => {
+        const index = seatOrderIndex(room, id);
+        return (
+          <div className="vote-team-card" key={id}>
+            <Shield size={18} />
+            <strong>{playerName(room, id)}</strong>
+            <span>{index === null ? "隊員" : `順位 ${index + 1}`}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function orderedRoomPlayers(room: RoomView): PlayerPublic[] {
+  if (room.game.playerOrder.length === 0) {
+    return room.players;
+  }
+  const byId = new Map(room.players.map((player) => [player.id, player]));
+  const ordered = room.game.playerOrder.map((id) => byId.get(id)).filter((player): player is PlayerPublic => Boolean(player));
+  const missing = room.players.filter((player) => !room.game.playerOrder.includes(player.id));
+  return [...ordered, ...missing];
 }
 
 function playerName(room: RoomView, playerId: string | null): string {

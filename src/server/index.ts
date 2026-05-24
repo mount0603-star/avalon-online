@@ -19,7 +19,8 @@ import {
   removeBot,
   resetRoom,
   rooms,
-  runBotActions,
+  runBotActionsForServer,
+  setBotAiSettings,
   setExcaliburEnabled,
   setLadyEnabled,
   setLadyHolderMode,
@@ -105,6 +106,7 @@ io.on("connection", (socket) => {
   socket.on("setLadyHolderMode", (mode) => runAction(socket, (room, playerId) => setLadyHolderMode(room, playerId, mode)));
   socket.on("setLancelotEnabled", (enabled) => runAction(socket, (room, playerId) => setLancelotEnabled(room, playerId, enabled)));
   socket.on("setExcaliburEnabled", (enabled) => runAction(socket, (room, playerId) => setExcaliburEnabled(room, playerId, enabled)));
+  socket.on("setBotAiSettings", (settings) => runAction(socket, (room, playerId) => setBotAiSettings(room, playerId, settings)));
   socket.on("proposeTeam", (teamIds, excaliburHolderId) =>
     runAction(socket, (room, playerId) => proposeTeam(room, playerId, teamIds, excaliburHolderId))
   );
@@ -137,9 +139,9 @@ io.on("connection", (socket) => {
       }
 
       touchRoom(room);
-      runBotActions(room);
       emitRoom(room.code);
       emitLobbyRooms();
+      void runBotsAndEmit(room);
     } catch (error) {
       socket.emit("roomError", getErrorMessage(error));
     }
@@ -167,12 +169,18 @@ function runAction(
   try {
     action(room, playerId);
     touchRoom(room);
-    runBotActions(room);
     emitRoom(room.code);
     emitLobbyRooms();
+    void runBotsAndEmit(room);
   } catch (error) {
     socket.emit("roomError", getErrorMessage(error));
   }
+}
+
+async function runBotsAndEmit(room: NonNullable<ReturnType<typeof rooms.get>>): Promise<void> {
+  await runBotActionsForServer(room);
+  emitRoom(room.code);
+  emitLobbyRooms();
 }
 
 function closeRoom(roomCode: string, message: string): void {

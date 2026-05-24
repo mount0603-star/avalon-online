@@ -1,6 +1,23 @@
 import type { Allegiance, RoleId } from "./roles";
 
 export type LadyHolderMode = "tail" | "random";
+export type BotAiProvider = "openai" | "deepseek" | "custom";
+
+export type BotAiPublicConfig = {
+  enabled: boolean;
+  provider: BotAiProvider;
+  baseUrl: string;
+  model: string;
+  apiKeyConfigured: boolean;
+};
+
+export type BotAiSettingsPayload = {
+  enabled: boolean;
+  provider: BotAiProvider;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+};
 
 export type PlayerPublic = {
   id: string;
@@ -114,6 +131,7 @@ export type RoomView = {
   ladyHolderModeSetting: LadyHolderMode;
   lancelotEnabledSetting: boolean;
   excaliburEnabledSetting: boolean;
+  botAiSetting: BotAiPublicConfig;
   idleWarningAt: number;
   idleTimeoutAt: number;
   you: PlayerPublic | null;
@@ -161,6 +179,7 @@ export type ClientToServerEvents = {
   setLadyHolderMode: (mode: LadyHolderMode) => void;
   setLancelotEnabled: (enabled: boolean) => void;
   setExcaliburEnabled: (enabled: boolean) => void;
+  setBotAiSettings: (settings: BotAiSettingsPayload) => void;
   startGame: () => void;
   proposeTeam: (teamIds: string[], excaliburHolderId?: string | null) => void;
   castTeamVote: (approve: boolean) => void;

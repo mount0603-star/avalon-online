@@ -14,6 +14,9 @@ import type {
   GamePublicState,
   PlayerPublic,
   BotOpinion,
+  BotAiProvider,
+  BotAiPublicConfig,
+  BotAiSettingsPayload,
   LadyHolderMode,
   LadyPendingResult,
   LadyResult,
@@ -68,10 +71,15 @@ export type RoomInternal = {
   ladyHolderModeSetting: LadyHolderMode;
   lancelotEnabledSetting: boolean;
   excaliburEnabledSetting: boolean;
+  botAiSetting: BotAiInternalConfig;
   players: Map<string, PlayerInternal>;
   game: GameInternal;
   createdAt: number;
   lastActivityAt: number;
+};
+
+type BotAiInternalConfig = BotAiPublicConfig & {
+  apiKey: string;
 };
 
 export const rooms = new Map<string, RoomInternal>();
@@ -80,6 +88,15 @@ export const IDLE_WARNING_MS = 15 * 60 * 1000;
 export const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const BOT_NAMES = ["蓋瑞斯", "崔斯坦", "伊蓮", "貝狄威爾", "蘭馬洛克", "艾克特", "凱", "加荷里斯"];
+const DEFAULT_BOT_AI_CONFIG: BotAiInternalConfig = {
+  enabled: false,
+  provider: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  model: "gpt-5-mini",
+  apiKey: "",
+  apiKeyConfigured: false
+};
+const BOT_AI_TIMEOUT_MS = 6500;
 
 export function emptyGame(): GameInternal {
   return {
@@ -148,6 +165,7 @@ export function createRoom(name: string, existingPlayerId?: string): { room: Roo
     ladyHolderModeSetting: "tail",
     lancelotEnabledSetting: false,
     excaliburEnabledSetting: false,
+    botAiSetting: { ...DEFAULT_BOT_AI_CONFIG },
     players: new Map([[playerId, player]]),
     game: emptyGame(),
     createdAt: now,
@@ -260,6 +278,31 @@ export function setExcaliburEnabled(room: RoomInternal, hostId: string, enabled:
     throw new Error("遊戲開始後不能更改王者之劍設定。");
   }
   room.excaliburEnabledSetting = enabled;
+}
+
+export function setBotAiSettings(room: RoomInternal, hostId: string, settings: BotAiSettingsPayload): void {
+  assertHost(room, hostId);
+  if (room.game.phase !== "lobby") {
+    throw new Error("遊戲開始後不能更改 AI 電腦設定。");
+  }
+
+  const provider = normalizeBotAiProvider(settings.provider);
+  const baseUrl = normalizeBotAiBaseUrl(provider, settings.baseUrl);
+  const model = normalizeBotAiModel(provider, settings.model);
+  const apiKey = settings.apiKey?.trim() || room.botAiSetting.apiKey;
+
+  if (settings.enabled && apiKey.length === 0) {
+    throw new Error("啟用 API 電腦前需要填入 API Key。");
+  }
+
+  room.botAiSetting = {
+    enabled: Boolean(settings.enabled),
+    provider,
+    baseUrl,
+    model,
+    apiKey,
+    apiKeyConfigured: apiKey.length > 0
+  };
 }
 
 export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteRoom: boolean } {
@@ -542,6 +585,7 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
   assertPhase(room, "lady");
   const holder = requirePlayer(room, playerId);
   const target = requirePlayer(room, targetId);
+  const normalizedAnnouncement = normalizeAllegiance(announcedAllegiance);
 
   if (room.game.ladyHolderId !== holder.id) {
     throw new Error("現在不是你持有湖中女神。");
@@ -562,11 +606,11 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
     if (pending.fromId !== holder.id || pending.targetId !== target.id) {
       throw new Error("請先完成目前這次湖中女神宣告。");
     }
-    if (!announcedAllegiance) {
+    if (!normalizedAnnouncement) {
       return;
     }
 
-    finalizeLadyOfLake(room, holder, target, pending.allegiance, announcedAllegiance);
+    finalizeLadyOfLake(room, holder, target, pending.allegiance, normalizedAnnouncement);
     return;
   }
 
@@ -575,7 +619,7 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
     allegiance: actualAllegiance
   };
 
-  if (!holder.isBot && !announcedAllegiance) {
+  if (!holder.isBot && !normalizedAnnouncement) {
     room.game.ladyPendingResult = {
       fromId: holder.id,
       targetId: target.id,
@@ -589,7 +633,7 @@ export function useLadyOfLake(room: RoomInternal, playerId: string, targetId: st
     holder,
     target,
     actualAllegiance,
-    announcedAllegiance || chooseBotLadyAnnouncement(room, holder, target, actualAllegiance)
+    normalizedAnnouncement || chooseBotLadyAnnouncement(room, holder, target, actualAllegiance)
   );
 }
 
@@ -666,6 +710,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
     ladyHolderModeSetting: room.ladyHolderModeSetting,
     lancelotEnabledSetting: room.lancelotEnabledSetting,
     excaliburEnabledSetting: room.excaliburEnabledSetting,
+    botAiSetting: toPublicBotAiSetting(room.botAiSetting),
     idleWarningAt: room.lastActivityAt + IDLE_WARNING_MS,
     idleTimeoutAt: room.lastActivityAt + IDLE_TIMEOUT_MS,
     you: viewer ? toPublicPlayer(viewer) : null,
@@ -706,7 +751,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
     yourAllegiance: viewer?.role ? playerAllegiance(room, viewer) : null,
     roleKnowledge: viewer?.role ? buildKnowledge(room, viewer.id, viewer.role) : [],
     ladyResult: viewer ? game.ladyResults[viewer.id] || null : null,
-    ladyPendingResult: viewer && game.ladyPendingResult?.fromId === viewer.id ? game.ladyPendingResult : null,
+    ladyPendingResult: viewer ? visibleLadyPendingResult(room, viewer) : null,
     revealedRoles
   };
 }
@@ -715,6 +760,18 @@ export function runBotActions(room: RoomInternal): boolean {
   let changed = false;
   for (let count = 0; count < 30; count += 1) {
     const acted = runOneBotAction(room);
+    if (!acted) {
+      return changed;
+    }
+    changed = true;
+  }
+  return changed;
+}
+
+export async function runBotActionsForServer(room: RoomInternal): Promise<boolean> {
+  let changed = false;
+  for (let count = 0; count < 30; count += 1) {
+    const acted = await runOneBotActionForServer(room);
     if (!acted) {
       return changed;
     }
@@ -918,6 +975,89 @@ function runOneBotAction(room: RoomInternal): boolean {
   return false;
 }
 
+async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
+  if (room.game.phase === "team-building") {
+    const leaderId = currentLeaderId(room);
+    const leader = leaderId ? room.players.get(leaderId) : null;
+    if (leader?.isBot) {
+      const apiTeam = await chooseApiBotTeam(room, leader);
+      const team = apiTeam?.teamIds || chooseBotTeam(room, leader);
+      const excaliburHolderId =
+        room.game.excaliburEnabled ? apiTeam?.excaliburHolderId || chooseBotExcaliburHolder(room, leader, team) : null;
+      proposeTeam(room, leader.id, team, excaliburHolderId);
+      if (apiTeam?.message) {
+        addBotOpinion(room, leader, "team-vote", apiTeam.message);
+      }
+      return true;
+    }
+  }
+
+  if (room.game.phase === "team-vote") {
+    const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
+    if (bot) {
+      const apiVote = await chooseApiBotTeamVote(room, bot);
+      const approve = apiVote?.approve ?? chooseBotTeamVote(room, bot);
+      const opinion = apiVote?.message || (approve ? null : botTeamVoteOpinion(room, bot));
+      castTeamVote(room, bot.id, approve);
+      if (opinion && !approve) {
+        addBotOpinion(room, bot, "team-vote", opinion);
+      }
+      return true;
+    }
+  }
+
+  if (room.game.phase === "mission") {
+    const bot = room.game.proposedTeam
+      .map((id) => room.players.get(id))
+      .find((player): player is PlayerInternal => Boolean(player && player.isBot && room.game.missionVotes[player.id] === undefined));
+    if (bot) {
+      castMissionVote(room, bot.id, chooseBotMissionVote(room, bot));
+      return true;
+    }
+  }
+
+  if (room.game.phase === "excalibur") {
+    const holder = room.game.excaliburHolderId ? room.players.get(room.game.excaliburHolderId) : null;
+    if (holder?.isBot) {
+      const apiTargetId = await chooseApiBotExcaliburTarget(room, holder);
+      const targetId = apiTargetId === undefined ? chooseBotExcaliburTarget(room, holder) : apiTargetId;
+      useExcalibur(room, holder.id, targetId);
+      addBotOpinion(
+        room,
+        holder,
+        "excalibur",
+        targetId ? `我想換掉 ${room.players.get(targetId)?.name || "一名隊員"} 的任務卡，看看結果會不會更合理。` : "我先不動王者之劍，保留原本任務卡。"
+      );
+      return true;
+    }
+  }
+
+  if (room.game.phase === "lady") {
+    const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
+    if (holder?.isBot) {
+      const targetId = chooseBotLadyTarget(room, holder);
+      const target = room.players.get(targetId)!;
+      const apiAnnouncement = await chooseApiBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      const announcement = apiAnnouncement || chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      useLadyOfLake(room, holder.id, targetId, announcement);
+      addBotOpinion(room, holder, "lady", `我查看 ${target.name}，我的公開說法是${announcement === "good" ? "好人" : "可疑"}。`);
+      return true;
+    }
+  }
+
+  if (room.game.phase === "assassination") {
+    const bot = assassinationVoters(room).find((player) => player.isBot && room.game.assassinationVotes[player.id] === undefined);
+    if (bot) {
+      const targetId = (await chooseApiBotAssassinationTarget(room, bot)) || chooseBotAssassinationTarget(room, bot);
+      addBotOpinion(room, bot, "assassination", `我最後會投 ${room.players.get(targetId)?.name || "這名玩家"}。`);
+      assassinate(room, bot.id, targetId);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
   const size = currentTeamSize(room);
   const team: string[] = [];
@@ -1018,7 +1158,7 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal): string {
     return `我反對這隊，${teamNames} 裡有我不信任的人。`;
   }
   if (playerAllegiance(room, bot) === "evil") {
-    return isCriticalMoment(room) ? `這隊對邪惡方不夠有利，我想再換一組。` : `我先反對，讓隊伍資訊多一點。`;
+    return isCriticalMoment(room) ? `這隊在關鍵局風險太高，我想再換一組。` : `我先反對，這隊資訊還不夠乾淨。`;
   }
   if (room.game.failedVoteCount >= 3) {
     return `否決快到危險線，但這隊我還是不放心。`;
@@ -1141,6 +1281,249 @@ function chooseBotLadyAnnouncement(
     return chance(0.94) ? "good" : "evil";
   }
   return chance(isCriticalMoment(room) ? 0.88 : 0.74) ? "evil" : "good";
+}
+
+type ApiTeamChoice = {
+  teamIds: string[];
+  excaliburHolderId: string | null;
+  message: string | null;
+};
+
+type BotAiDecision = {
+  approve?: boolean;
+  teamIds?: string[];
+  targetId?: string | null;
+  excaliburHolderId?: string | null;
+  announcement?: Allegiance;
+  message?: string;
+};
+
+async function chooseApiBotTeam(room: RoomInternal, bot: PlayerInternal): Promise<ApiTeamChoice | null> {
+  if (!shouldUseBotAi(room, bot)) {
+    return null;
+  }
+  const decision = await requestBotAiDecision(room, bot, "propose-team");
+  if (!decision?.teamIds) {
+    return null;
+  }
+
+  const teamIds = Array.from(new Set(decision.teamIds)).filter((id) => room.players.has(id));
+  if (teamIds.length !== currentTeamSize(room)) {
+    return null;
+  }
+
+  const excaliburHolderId =
+    room.game.excaliburEnabled && decision.excaliburHolderId && teamIds.includes(decision.excaliburHolderId) && decision.excaliburHolderId !== bot.id
+      ? decision.excaliburHolderId
+      : null;
+
+  return {
+    teamIds,
+    excaliburHolderId,
+    message: sanitizeBotSpeech(decision.message)
+  };
+}
+
+async function chooseApiBotTeamVote(room: RoomInternal, bot: PlayerInternal): Promise<{ approve: boolean; message: string | null } | null> {
+  if (!shouldUseBotAi(room, bot)) {
+    return null;
+  }
+  const decision = await requestBotAiDecision(room, bot, "team-vote");
+  if (typeof decision?.approve !== "boolean") {
+    return null;
+  }
+  return {
+    approve: decision.approve,
+    message: sanitizeBotSpeech(decision.message)
+  };
+}
+
+async function chooseApiBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): Promise<string | null | undefined> {
+  if (!shouldUseBotAi(room, bot)) {
+    return undefined;
+  }
+  const decision = await requestBotAiDecision(room, bot, "excalibur");
+  if (decision?.targetId === null) {
+    return null;
+  }
+  if (decision?.targetId && room.game.proposedTeam.includes(decision.targetId) && decision.targetId !== bot.id) {
+    return decision.targetId;
+  }
+  return undefined;
+}
+
+async function chooseApiBotLadyAnnouncement(
+  room: RoomInternal,
+  bot: PlayerInternal,
+  target: PlayerInternal,
+  actualAllegiance: Allegiance
+): Promise<Allegiance | null> {
+  if (!shouldUseBotAi(room, bot)) {
+    return null;
+  }
+  const decision = await requestBotAiDecision(room, bot, "lady", { ladyTargetId: target.id, actualAllegiance });
+  return normalizeAllegiance(decision?.announcement);
+}
+
+async function chooseApiBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): Promise<string | null> {
+  if (!shouldUseBotAi(room, bot)) {
+    return null;
+  }
+  const decision = await requestBotAiDecision(room, bot, "assassination");
+  if (decision?.targetId && room.players.has(decision.targetId) && decision.targetId !== bot.id) {
+    return decision.targetId;
+  }
+  return null;
+}
+
+function shouldUseBotAi(room: RoomInternal, bot: PlayerInternal): boolean {
+  return bot.isBot && room.botAiSetting.enabled && room.botAiSetting.apiKeyConfigured && room.botAiSetting.apiKey.length > 0;
+}
+
+async function requestBotAiDecision(
+  room: RoomInternal,
+  bot: PlayerInternal,
+  task: "propose-team" | "team-vote" | "excalibur" | "lady" | "assassination",
+  extra: Record<string, unknown> = {}
+): Promise<BotAiDecision | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BOT_AI_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${room.botAiSetting.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${room.botAiSetting.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: room.botAiSetting.model,
+        temperature: 0.65,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是阿瓦隆桌遊中的電腦玩家。你只能使用自己角色合法知道的資訊，不要自爆陣營或說自己是 AI。請只回 JSON，不要 markdown。"
+          },
+          {
+            role: "user",
+            content: JSON.stringify(buildBotAiPromptState(room, bot, task, extra))
+          }
+        ]
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return parseBotAiDecision(payload.choices?.[0]?.message?.content || "");
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildBotAiPromptState(
+  room: RoomInternal,
+  bot: PlayerInternal,
+  task: "propose-team" | "team-vote" | "excalibur" | "lady" | "assassination",
+  extra: Record<string, unknown>
+): Record<string, unknown> {
+  const knowledge = bot.role ? buildKnowledge(room, bot.id, bot.role) : [];
+  const knownMap = new Map<string, string[]>();
+  for (const item of knowledge) {
+    for (const id of item.playerIds) {
+      knownMap.set(id, [...(knownMap.get(id) || []), item.label]);
+    }
+  }
+  const ladyResult = room.game.ladyResults[bot.id] || null;
+  if (ladyResult) {
+    knownMap.set(ladyResult.targetId, [...(knownMap.get(ladyResult.targetId) || []), `湖中女神真實：${ladyResult.allegiance === "good" ? "好人" : "邪惡"}`]);
+  }
+
+  return {
+    task,
+    instruction: {
+      "propose-team": `選出 teamIds，長度必須是 ${currentTeamSize(room)}。若王者之劍啟用，excaliburHolderId 必須是隊伍中非隊長玩家。`,
+      "team-vote": "判斷是否 approve 目前隊伍，必要時給一句中性理由 message。",
+      excalibur: "可選 targetId 更換一名其他任務隊員的任務卡，或 targetId:null 表示不用。",
+      lady: "選擇公開宣告 announcement: good 或 evil。可以依照你的陣營選擇是否說實話。",
+      assassination: "選 targetId 猜梅林。"
+    }[task],
+    responseShape: {
+      approve: "boolean，可用於 team-vote",
+      teamIds: "string[]，可用於 propose-team",
+      targetId: "string 或 null，可用於 excalibur/assassination",
+      excaliburHolderId: "string 或 null，可用於 propose-team",
+      announcement: "good 或 evil，可用於 lady",
+      message: "短句，不能提到邪惡方、好人方策略、API、AI、真實角色或自己陣營"
+    },
+    self: {
+      id: bot.id,
+      name: bot.name,
+      role: bot.role,
+      roleName: bot.role ? ROLE_DEFINITIONS[bot.role].name : null,
+      currentAllegiance: playerAllegiance(room, bot)
+    },
+    game: {
+      phase: room.game.phase,
+      questIndex: room.game.questIndex + 1,
+      teamSize: currentTeamSize(room),
+      failThreshold: currentFailThreshold(room),
+      failedVoteCount: room.game.failedVoteCount,
+      proposedTeam: room.game.proposedTeam,
+      missionResults: room.game.quests.map((quest) => ({
+        index: quest.index + 1,
+        team: quest.team,
+        success: quest.success,
+        failCount: quest.failCount
+      })),
+      voteHistory: room.game.voteHistory.slice(-5)
+    },
+    players: orderedPlayers(room).map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      order: index + 1,
+      isSelf: player.id === bot.id,
+      isLeader: currentLeaderId(room) === player.id,
+      isOnProposedTeam: room.game.proposedTeam.includes(player.id),
+      knownInfo: knownMap.get(player.id) || []
+    })),
+    extra
+  };
+}
+
+function parseBotAiDecision(content: string): BotAiDecision | null {
+  const trimmed = content.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+  try {
+    const parsed = JSON.parse(trimmed) as BotAiDecision;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace < 0 || lastBrace <= firstBrace) {
+      return null;
+    }
+    try {
+      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1)) as BotAiDecision;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function sanitizeBotSpeech(message: unknown): string | null {
+  if (typeof message !== "string") {
+    return null;
+  }
+  const cleaned = message
+    .replace(/邪惡方|邪惡陣營|壞人方|好人方|亞瑟陣營|我是壞人|我是好人|我是AI|AI|API/gi, "這邊")
+    .trim()
+    .slice(0, 44);
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerInternal[] {
@@ -1450,6 +1833,69 @@ function toPublicPlayer(player: PlayerInternal): PlayerPublic {
     isHost: player.isHost,
     isBot: player.isBot
   };
+}
+
+function toPublicBotAiSetting(setting: BotAiInternalConfig): BotAiPublicConfig {
+  return {
+    enabled: setting.enabled,
+    provider: setting.provider,
+    baseUrl: setting.baseUrl,
+    model: setting.model,
+    apiKeyConfigured: setting.apiKeyConfigured
+  };
+}
+
+function visibleLadyPendingResult(room: RoomInternal, viewer: PlayerInternal): LadyPendingResult | null {
+  const pending = room.game.ladyPendingResult;
+  if (pending?.fromId === viewer.id) {
+    return pending;
+  }
+
+  const result = room.game.ladyResults[viewer.id];
+  if (!result || room.game.phase !== "lady" || room.game.ladyHolderId !== viewer.id) {
+    return null;
+  }
+
+  const alreadyAnnounced = room.game.ladyInspections.some((inspection) => inspection.fromId === viewer.id && inspection.targetId === result.targetId);
+  if (alreadyAnnounced) {
+    return null;
+  }
+
+  return {
+    fromId: viewer.id,
+    targetId: result.targetId,
+    allegiance: result.allegiance
+  };
+}
+
+function normalizeBotAiProvider(provider: BotAiProvider): BotAiProvider {
+  if (provider === "openai" || provider === "deepseek" || provider === "custom") {
+    return provider;
+  }
+  return "openai";
+}
+
+function normalizeBotAiBaseUrl(provider: BotAiProvider, baseUrl?: string): string {
+  const cleaned = baseUrl?.trim().replace(/\/+$/, "");
+  if (provider === "deepseek") {
+    return cleaned || "https://api.deepseek.com";
+  }
+  if (provider === "custom") {
+    return cleaned || "https://api.openai.com/v1";
+  }
+  return cleaned || "https://api.openai.com/v1";
+}
+
+function normalizeBotAiModel(provider: BotAiProvider, model?: string): string {
+  const cleaned = model?.trim();
+  if (cleaned) {
+    return cleaned.slice(0, 80);
+  }
+  return provider === "deepseek" ? "deepseek-v4-flash" : "gpt-5-mini";
+}
+
+function normalizeAllegiance(value: unknown): Allegiance | null {
+  return value === "good" || value === "evil" ? value : null;
 }
 
 function isLancelotRole(role: RoleId | null): role is "lancelotGood" | "lancelotEvil" {

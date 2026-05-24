@@ -18,6 +18,7 @@ import {
   setLadyHolderMode,
   setLancelotEnabled,
   setExcaliburEnabled,
+  setBotAiSettings,
   isRoomIdleExpired,
   IDLE_TIMEOUT_MS
 } from "./game";
@@ -113,6 +114,9 @@ test("lady of the lake reveals allegiance only to the holder and passes token", 
   assert.equal(buildRoomView(room, hostId).ladyPendingResult?.allegiance, room.game.ladyResults[hostId].allegiance);
   assert.equal(buildRoomView(room, targetId).ladyResult, null);
 
+  room.game.ladyPendingResult = null;
+  assert.equal(buildRoomView(room, hostId).ladyPendingResult?.targetId, targetId);
+
   useLadyOfLake(room, hostId, targetId, "good");
 
   assert.equal(room.game.phase, "team-building");
@@ -133,6 +137,23 @@ test("host can disable lady of the lake before the game starts", () => {
 
   assert.equal(room.game.ladyEnabled, false);
   assert.equal(room.game.ladyHolderId, null);
+});
+
+test("host can configure API bots without exposing the key", () => {
+  const { room, playerId: hostId } = createRoom("A");
+
+  setBotAiSettings(room, hostId, {
+    enabled: true,
+    provider: "deepseek",
+    apiKey: "sk-test",
+    model: "deepseek-v4-flash"
+  });
+
+  const view = buildRoomView(room, hostId);
+  assert.equal(view.botAiSetting.enabled, true);
+  assert.equal(view.botAiSetting.provider, "deepseek");
+  assert.equal(view.botAiSetting.apiKeyConfigured, true);
+  assert.equal("apiKey" in view.botAiSetting, false);
 });
 
 test("lady holder can start from the tail player or a random player", () => {
