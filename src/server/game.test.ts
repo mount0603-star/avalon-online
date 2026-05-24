@@ -146,7 +146,7 @@ test("host can configure API bots without exposing the key", () => {
     enabled: true,
     provider: "deepseek",
     apiKey: "sk-test",
-    model: "deepseek-v4-flash"
+    model: "deepseek-chat"
   });
 
   const view = buildRoomView(room, hostId);

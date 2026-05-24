@@ -130,7 +130,7 @@ const botAiDefaults: Record<BotAiProvider, { label: string; baseUrl: string; mod
   deepseek: {
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
-    model: "deepseek-v4-flash"
+    model: "deepseek-chat"
   },
   custom: {
     label: "自訂相容 API",

@@ -1891,7 +1891,7 @@ function normalizeBotAiModel(provider: BotAiProvider, model?: string): string {
   if (cleaned) {
     return cleaned.slice(0, 80);
   }
-  return provider === "deepseek" ? "deepseek-v4-flash" : "gpt-5-mini";
+  return provider === "deepseek" ? "deepseek-chat" : "gpt-5-mini";
 }
 
 function normalizeAllegiance(value: unknown): Allegiance | null {
