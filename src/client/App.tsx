@@ -25,10 +25,18 @@ import {
 } from "lucide-react";
 import { socket } from "./socket";
 import type { BotAiProvider, LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
-import roleCardsUrl from "./assets/role-cards.png";
 import councilHallUrl from "./assets/council-hall.png";
-import lancelotGoodUrl from "./assets/lancelot-good.png";
-import lancelotEvilUrl from "./assets/lancelot-evil.png";
+import merlinCardUrl from "./assets/role-cards/merlin.png";
+import percivalCardUrl from "./assets/role-cards/percival.png";
+import loyalCardUrl from "./assets/role-cards/loyal.png";
+import loyalAltCardUrl from "./assets/role-cards/loyal-2.png";
+import lancelotGoodCardUrl from "./assets/role-cards/lancelot-good.png";
+import assassinCardUrl from "./assets/role-cards/assassin.png";
+import morganaCardUrl from "./assets/role-cards/morgana.png";
+import mordredCardUrl from "./assets/role-cards/mordred.png";
+import oberonCardUrl from "./assets/role-cards/oberon.png";
+import minionCardUrl from "./assets/role-cards/minion.png";
+import lancelotEvilCardUrl from "./assets/role-cards/lancelot-evil.png";
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
@@ -68,22 +76,10 @@ const roleTone: Record<RoleId, string> = {
   minion: "role-evil"
 };
 
-const roleMark: Record<RoleId, string> = {
-  merlin: "✦",
-  percival: "◇",
-  loyal: "♜",
-  lancelotGood: "◆",
-  assassin: "†",
-  morgana: "☾",
-  mordred: "♛",
-  oberon: "◌",
-  lancelotEvil: "◆",
-  minion: "◆"
-};
-
 const fullRoleGallery: RoleId[] = [
   "merlin",
   "percival",
+  "loyal",
   "loyal",
   "lancelotGood",
   "assassin",
@@ -93,6 +89,19 @@ const fullRoleGallery: RoleId[] = [
   "lancelotEvil",
   "minion"
 ];
+
+const roleCardImageUrls: Record<RoleId, string[]> = {
+  merlin: [merlinCardUrl],
+  percival: [percivalCardUrl],
+  loyal: [loyalCardUrl, loyalAltCardUrl],
+  lancelotGood: [lancelotGoodCardUrl],
+  assassin: [assassinCardUrl],
+  morgana: [morganaCardUrl],
+  mordred: [mordredCardUrl],
+  oberon: [oberonCardUrl],
+  lancelotEvil: [lancelotEvilCardUrl],
+  minion: [minionCardUrl]
+};
 
 const questTeamSizes: Record<number, number[]> = {
   5: [2, 3, 2, 3, 3],
@@ -293,10 +302,7 @@ export function App() {
       className="app-shell"
       style={
         {
-          "--card-sheet": `url(${roleCardsUrl})`,
-          "--hall-bg": `url(${councilHallUrl})`,
-          "--lancelot-good": `url(${lancelotGoodUrl})`,
-          "--lancelot-evil": `url(${lancelotEvilUrl})`
+          "--hall-bg": `url(${councilHallUrl})`
         } as CSSProperties
       }
     >
@@ -538,16 +544,19 @@ function PlayerList({
       <div className="seat-grid">
         {displayedPlayers.map((player) => {
           const badge = intelBadge(room, player.id);
+          const visibleRole = visibleRoleForPlayer(room, player.id);
           const isLeader = leaderId === player.id;
           const isDraftMember = teamDraft?.includes(player.id) ?? false;
           const isQuestMember = room.game.proposedTeam.includes(player.id) || isDraftMember;
           const isLadyHolder = room.game.ladyEnabled && room.game.ladyHolderId === player.id;
           const orderIndex = seatOrderIndex(room, player.id);
           const cardClass = playerSeatClass(room, player, isDraftMember, Boolean(onToggleTeamDraft));
+          const cardStyle = visibleRole ? roleCardStyle(visibleRole, roleVariantIndexForPlayer(room, player.id, visibleRole)) : undefined;
           return (
             <div
               className={cardClass}
               key={player.id}
+              style={cardStyle}
               role={onToggleTeamDraft ? "button" : undefined}
               tabIndex={onToggleTeamDraft ? 0 : undefined}
               aria-pressed={onToggleTeamDraft ? isDraftMember : undefined}
@@ -877,9 +886,7 @@ function RoleCard({ room }: { room: RoomView }) {
   const switchedSide = currentSide !== role.allegiance;
   return (
     <div className={`identity-panel ${currentSide === "good" ? "identity-good" : "identity-evil"}`}>
-      <div className={`role-portrait card-art card-art-${room.yourRole}`}>
-        <span>{roleMark[room.yourRole]}</span>
-      </div>
+      <div className="role-portrait card-art" style={roleCardStyle(room.yourRole, roleVariantIndexForPlayer(room, room.you?.id || "", room.yourRole))} />
       <div>
         <span>{side}</span>
         <h2>{role.name}</h2>
@@ -1283,15 +1290,16 @@ function RolePreview({ room, compact = false }: { room?: RoomView; compact?: boo
 }
 
 function RoleGallery({ roles }: { roles: RoleId[] }) {
+  const seen = new Map<RoleId, number>();
   return (
     <div className="role-gallery-grid">
       {roles.map((roleId, index) => {
         const role = ROLE_DEFINITIONS[roleId];
+        const occurrence = seen.get(roleId) || 0;
+        seen.set(roleId, occurrence + 1);
         return (
           <div className={`role-gallery-card ${role.allegiance === "good" ? "chip-good" : "chip-evil"}`} key={`${role.id}-${index}`}>
-            <span className={`role-gallery-art card-thumb card-art-${role.id}`} data-mark={roleMark[role.id]}>
-              {roleMark[role.id]}
-            </span>
+            <span className="role-gallery-art card-thumb" style={roleCardStyle(role.id, occurrence)} aria-label={role.shortName} />
             <strong>{role.shortName}</strong>
           </div>
         );
@@ -1490,7 +1498,7 @@ function playerSeatClass(room: RoomView, player: PlayerPublic, isDraftMember = f
   const badge = intelBadge(room, player.id);
   const classes = ["seat-card"];
   if (visibleRole) {
-    classes.push("known-card", `card-art-${visibleRole}`);
+    classes.push("known-card");
   } else {
     classes.push("hidden-card");
   }
@@ -1558,6 +1566,29 @@ function intelBadge(room: RoomView, playerId: string): { text: string; tone: "go
     return room.ladyPendingResult.allegiance === "good" ? { text: "女神：好人", tone: "good" } : { text: "女神：邪惡", tone: "evil" };
   }
   return null;
+}
+
+function roleCardImage(role: RoleId, variantIndex = 0): string {
+  const variants = roleCardImageUrls[role];
+  return variants[Math.abs(variantIndex) % variants.length];
+}
+
+function roleCardStyle(role: RoleId, variantIndex = 0): CSSProperties {
+  return { "--role-card-url": `url(${roleCardImage(role, variantIndex)})` } as CSSProperties;
+}
+
+function roleVariantIndexForPlayer(room: RoomView, playerId: string, role: RoleId): number {
+  let occurrence = 0;
+  for (const player of orderedRoomPlayers(room)) {
+    if (visibleRoleForPlayer(room, player.id) !== role) {
+      continue;
+    }
+    if (player.id === playerId) {
+      return occurrence;
+    }
+    occurrence += 1;
+  }
+  return 0;
 }
 
 function questFailText(playerCount: number, index: number): string {

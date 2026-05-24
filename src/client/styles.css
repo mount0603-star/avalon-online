@@ -593,8 +593,9 @@ select {
 .seat-card.known-card {
   background-image:
     linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.68)),
-    var(--card-sheet);
-  background-size: 400% 200%;
+    var(--role-card-url);
+  background-size: cover;
+  background-position: center;
   background-repeat: no-repeat;
 }
 
@@ -1202,7 +1203,6 @@ select {
 
 .role-portrait {
   display: grid;
-  place-items: start center;
   flex: 0 0 auto;
   width: 124px;
   aspect-ratio: 3 / 4;
@@ -1217,102 +1217,14 @@ select {
     0 18px 36px rgba(0, 0, 0, 0.22);
 }
 
-.role-portrait span {
-  margin-top: 6px;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 245, 212, 0.7);
-  background: radial-gradient(circle at 50% 35%, rgba(255, 236, 158, 0.32), rgba(24, 19, 11, 0.94));
-  color: #f7d46b;
-  font-size: 1.12rem;
-  line-height: 1;
-  text-shadow: 0 4px 22px rgba(0, 0, 0, 0.45);
-}
-
-.portrait-assassin,
-.portrait-morgana,
-.portrait-mordred,
-.portrait-oberon,
-.portrait-minion {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.12)),
-    linear-gradient(145deg, rgba(184, 74, 74, 0.75), rgba(20, 16, 18, 0.94));
-}
-
 .card-art,
 .card-thumb {
   background-image:
     linear-gradient(180deg, transparent 64%, rgba(0, 0, 0, 0.54)),
-    var(--card-sheet);
-  background-size: 400% 200%;
+    var(--role-card-url);
+  background-size: cover;
+  background-position: center;
   background-repeat: no-repeat;
-}
-
-.card-art-merlin {
-  background-position: 0% 0%;
-}
-
-.card-art-percival {
-  background-position: 33.333% 0%;
-}
-
-.card-art-loyal {
-  background-position: 66.666% 0%;
-}
-
-.card-art-lancelotGood {
-  background-image:
-    linear-gradient(180deg, transparent 64%, rgba(0, 0, 0, 0.54)),
-    var(--lancelot-good);
-  background-size: cover;
-  background-position: center;
-}
-
-.seat-card.known-card.card-art-lancelotGood {
-  background-image:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.68)),
-    var(--lancelot-good);
-  background-size: cover;
-  background-position: center;
-}
-
-.card-art-assassin {
-  background-position: 0% 100%;
-}
-
-.card-art-morgana {
-  background-position: 33.333% 100%;
-}
-
-.card-art-mordred {
-  background-position: 66.666% 100%;
-}
-
-.card-art-oberon {
-  background-position: 100% 100%;
-}
-
-.card-art-lancelotEvil {
-  background-image:
-    linear-gradient(180deg, transparent 64%, rgba(0, 0, 0, 0.54)),
-    var(--lancelot-evil);
-  background-size: cover;
-  background-position: center;
-}
-
-.seat-card.known-card.card-art-lancelotEvil {
-  background-image:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.68)),
-    var(--lancelot-evil);
-  background-size: cover;
-  background-position: center;
-}
-
-.card-art-minion {
-  background-position: 100% 100%;
 }
 
 .identity-panel h2,
@@ -1677,25 +1589,6 @@ select {
     inset 0 0 0 1px rgba(232, 188, 79, 0.76),
     inset 0 0 0 5px rgba(0, 0, 0, 0.26),
     0 10px 20px rgba(0, 0, 0, 0.26);
-}
-
-.role-gallery-art::after {
-  content: attr(data-mark);
-  position: absolute;
-  top: 5px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: grid;
-  place-items: center;
-  width: 25px;
-  height: 25px;
-  border: 1px solid rgba(255, 245, 212, 0.66);
-  border-radius: 999px;
-  background: radial-gradient(circle at 50% 35%, rgba(255, 236, 158, 0.32), rgba(24, 19, 11, 0.94));
-  color: #f7d46b;
-  font-size: 0.92rem;
-  line-height: 1;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
 }
 
 .bot-opinion-row {
