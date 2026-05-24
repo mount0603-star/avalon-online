@@ -9,6 +9,7 @@ import {
   Eye,
   Flag,
   Hourglass,
+  Link as LinkIcon,
   LogIn,
   LogOut,
   Plus,
@@ -51,6 +52,27 @@ import {
 const PLAYER_ID_KEY = "avalon-online.playerId";
 const ROOM_CODE_KEY = "avalon-online.roomCode";
 const PLAYER_NAME_KEY = "avalon-online.playerName";
+
+function roomCodeFromUrl(): string {
+  const code = new URLSearchParams(window.location.search).get("room") || "";
+  return code.trim().toUpperCase().slice(0, 4);
+}
+
+function roomInviteUrl(roomCode: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set("room", roomCode);
+  return url.toString();
+}
+
+function replaceRoomCodeInUrl(roomCode: string | null): void {
+  const url = new URL(window.location.href);
+  if (roomCode) {
+    url.searchParams.set("room", roomCode);
+  } else {
+    url.searchParams.delete("room");
+  }
+  window.history.replaceState(null, "", url.toString());
+}
 
 const phaseLabel: Record<RoomView["game"]["phase"], string> = {
   lobby: "大廳",
@@ -148,7 +170,7 @@ const botAiDefaults: Record<BotAiProvider, { label: string; baseUrl: string; mod
 export function App() {
   const [room, setRoom] = useState<RoomView | null>(null);
   const [name, setName] = useState(() => localStorage.getItem(PLAYER_NAME_KEY) || "");
-  const [roomCode, setRoomCode] = useState(() => localStorage.getItem(ROOM_CODE_KEY) || "");
+  const [roomCode, setRoomCode] = useState(() => roomCodeFromUrl() || localStorage.getItem(ROOM_CODE_KEY) || "");
   const [error, setError] = useState("");
   const [lobbyRooms, setLobbyRooms] = useState<LobbyRoomSummary[]>([]);
   const [isBusy, setIsBusy] = useState(false);
@@ -162,7 +184,7 @@ export function App() {
     };
     const onError = (message: string) => setError(message);
     const onClosed = (message: string) => {
-      clearRoomSession();
+      clearRoomSession({ preserveRoomCode: message === "你已離開房間。" });
       setError(message);
     };
     const onConnect = () => setConnected(true);
@@ -186,9 +208,18 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const urlRoomCode = roomCodeFromUrl();
     const storedName = localStorage.getItem(PLAYER_NAME_KEY);
     const storedRoomCode = localStorage.getItem(ROOM_CODE_KEY);
     const storedPlayerId = localStorage.getItem(PLAYER_ID_KEY);
+
+    if (urlRoomCode && urlRoomCode !== storedRoomCode) {
+      localStorage.removeItem(PLAYER_ID_KEY);
+      localStorage.setItem(ROOM_CODE_KEY, urlRoomCode);
+      setRoomCode(urlRoomCode);
+      return;
+    }
+
     if (!storedName || !storedRoomCode || !storedPlayerId) {
       return;
     }
@@ -238,13 +269,21 @@ export function App() {
     localStorage.setItem(ROOM_CODE_KEY, payload.roomCode);
     localStorage.setItem(PLAYER_NAME_KEY, playerName);
     setRoomCode(payload.roomCode);
+    replaceRoomCodeInUrl(payload.roomCode);
   }
 
-  function clearRoomSession() {
+  function clearRoomSession({ preserveRoomCode = false }: { preserveRoomCode?: boolean } = {}) {
+    const currentRoomCode = room?.roomCode || roomCode;
     localStorage.removeItem(PLAYER_ID_KEY);
-    localStorage.removeItem(ROOM_CODE_KEY);
+    if (!preserveRoomCode) {
+      localStorage.removeItem(ROOM_CODE_KEY);
+      replaceRoomCodeInUrl(null);
+    } else if (currentRoomCode) {
+      localStorage.setItem(ROOM_CODE_KEY, currentRoomCode);
+      replaceRoomCodeInUrl(currentRoomCode);
+    }
     setRoom(null);
-    setRoomCode("");
+    setRoomCode(preserveRoomCode ? currentRoomCode : "");
   }
 
   function createRoom() {
@@ -299,7 +338,7 @@ export function App() {
 
   function leaveCurrentRoom() {
     socket.emit("leaveRoom");
-    clearRoomSession();
+    clearRoomSession({ preserveRoomCode: true });
     setError("");
   }
 
@@ -484,6 +523,14 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
             {room.roomCode}
             <button className="icon-button" aria-label="複製房號" title="複製房號" onClick={() => navigator.clipboard?.writeText(room.roomCode)}>
               <Copy size={16} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="複製邀請網址"
+              title="複製邀請網址"
+              onClick={() => navigator.clipboard?.writeText(roomInviteUrl(room.roomCode))}
+            >
+              <LinkIcon size={16} />
             </button>
           </div>
         </div>

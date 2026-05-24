@@ -100,6 +100,28 @@ test("bot leaders can propose a legal team", () => {
   assert.equal(room.game.proposedTeam.length, 2);
 });
 
+test("bot display names match their visible seat order", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  for (let index = 0; index < 4; index += 1) {
+    addBot(room, hostId);
+  }
+
+  assert.deepEqual(
+    Array.from(room.players.values())
+      .filter((player) => player.isBot)
+      .map((player) => player.name),
+    ["電腦2", "電腦3", "電腦4", "電腦5"]
+  );
+
+  startGame(room, hostId);
+  room.game.playerOrder.forEach((id, index) => {
+    const player = room.players.get(id)!;
+    if (player.isBot) {
+      assert.equal(player.name, `電腦${index + 1}`);
+    }
+  });
+});
+
 test("leader draft selections are public before submitting the team", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));

@@ -146,25 +146,16 @@ export function normalizeName(name: string): string {
 }
 
 function nextBotName(room: RoomInternal): string {
-  const usedNames = new Set(Array.from(room.players.values()).map((player) => player.name));
-  for (let index = 1; index <= MAX_PLAYERS; index += 1) {
-    const candidate = `${BOT_NAME_PREFIX}${index}`;
-    if (!usedNames.has(candidate)) {
-      return candidate;
-    }
-  }
   return `${BOT_NAME_PREFIX}${room.players.size + 1}`;
 }
 
 function renumberBots(room: RoomInternal): void {
-  let index = 1;
-  for (const player of orderedPlayers(room)) {
-    if (!player.isBot) {
-      continue;
+  orderedPlayers(room).forEach((player, index) => {
+    if (!player.isBot || !player.id.startsWith("bot-")) {
+      return;
     }
-    player.name = `${BOT_NAME_PREFIX}${index}`;
-    index += 1;
-  }
+    player.name = `${BOT_NAME_PREFIX}${index + 1}`;
+  });
 }
 
 function findRejoinablePlayerByName(room: RoomInternal, name: string): PlayerInternal | null {
@@ -466,6 +457,7 @@ export function startGame(room: RoomInternal, playerId: string): void {
     lancelotAllegiances,
     lancelotDeck: lancelotEnabled ? shuffle<LancelotCard>(["switch", "switch", "blank", "blank", "blank"]) : []
   };
+  renumberBots(room);
 }
 
 export function proposeTeam(room: RoomInternal, playerId: string, teamIds: string[], excaliburHolderId?: string | null): void {
