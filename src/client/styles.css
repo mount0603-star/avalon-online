@@ -135,6 +135,84 @@ button:disabled {
   color: #e9857f;
 }
 
+.connection-tools {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.voice-control {
+  position: relative;
+}
+
+.voice-button.active {
+  border-color: rgba(124, 218, 209, 0.65);
+  background: rgba(80, 178, 169, 0.18);
+  color: var(--aqua);
+  box-shadow: 0 0 0 1px rgba(124, 218, 209, 0.18);
+}
+
+.voice-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  gap: 12px;
+  width: min(320px, calc(100vw - 28px));
+  padding: 14px;
+  border: 1px solid rgba(247, 240, 223, 0.18);
+  border-radius: 8px;
+  background: rgba(30, 29, 25, 0.97);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.voice-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-head strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.voice-head span,
+.voice-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.voice-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-actions .primary-button,
+.voice-actions .secondary-button,
+.voice-actions .danger-button {
+  width: 100%;
+}
+
+.voice-note,
+.voice-error {
+  margin: 0;
+}
+
+.voice-error {
+  color: #ffb3aa;
+  font-size: 0.82rem;
+}
+
+.voice-audio-sink {
+  display: none;
+}
+
 .room-actions {
   display: flex;
   align-items: center;
@@ -2135,6 +2213,16 @@ select {
     align-items: flex-start;
     flex-direction: column;
     padding-bottom: 14px;
+  }
+
+  .connection-tools {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .voice-popover {
+    right: auto;
+    left: 0;
   }
 
   .room-actions {

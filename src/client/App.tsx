@@ -12,8 +12,11 @@ import {
   Link as LinkIcon,
   LogIn,
   LogOut,
+  Mic,
+  MicOff,
   Plus,
   RotateCcw,
+  Settings,
   Shield,
   Sparkles,
   Swords,
@@ -21,12 +24,13 @@ import {
   Trash2,
   Users,
   Vote,
+  Volume2,
   Waves,
   WifiOff,
   X
 } from "lucide-react";
 import { socket } from "./socket";
-import type { BotAiProvider, LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView } from "../shared/types";
+import type { BotAiProvider, LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView, VoiceSignalPayload } from "../shared/types";
 import councilHallUrl from "./assets/council-hall.png";
 import merlinCardUrl from "./assets/role-cards/merlin.png";
 import percivalCardUrl from "./assets/role-cards/percival.png";
@@ -356,9 +360,12 @@ export function App() {
           <p className="eyebrow">bevis與他的朋友私人遊戲 不公開</p>
           <h1>阿瓦隆線上版</h1>
         </div>
-        <div className={connected ? "connection online" : "connection offline"}>
-          {connected ? <Circle size={14} fill="currentColor" /> : <WifiOff size={16} />}
-          {connected ? "已連線" : "離線"}
+        <div className="connection-tools">
+          <div className={connected ? "connection online" : "connection offline"}>
+            {connected ? <Circle size={14} fill="currentColor" /> : <WifiOff size={16} />}
+            {connected ? "已連線" : "離線"}
+          </div>
+          {room ? <VoiceChatControl room={room} connected={connected} /> : null}
         </div>
       </section>
 
@@ -378,6 +385,227 @@ export function App() {
         <GameRoom room={room} error={error} onLeave={leaveCurrentRoom} />
       )}
     </main>
+  );
+}
+
+function VoiceChatControl({ room, connected }: { room: RoomView; connected: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [peerIds, setPeerIds] = useState<string[]>([]);
+  const [voiceError, setVoiceError] = useState("");
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const enabledRef = useRef(false);
+  const mutedRef = useRef(false);
+  const peerConnectionsRef = useRef(new Map<string, RTCPeerConnection>());
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
+  const audioContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
+
+  useEffect(() => {
+    mutedRef.current = muted;
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+  }, [muted]);
+
+  function closePeer(playerId: string) {
+    peerConnectionsRef.current.get(playerId)?.close();
+    peerConnectionsRef.current.delete(playerId);
+    audioElementsRef.current.get(playerId)?.remove();
+    audioElementsRef.current.delete(playerId);
+    setPeerIds((current) => current.filter((id) => id !== playerId));
+  }
+
+  function ensurePeer(playerId: string): RTCPeerConnection {
+    const existing = peerConnectionsRef.current.get(playerId);
+    if (existing) {
+      return existing;
+    }
+
+    const peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    peerConnectionsRef.current.set(playerId, peer);
+    setPeerIds((current) => (current.includes(playerId) ? current : [...current, playerId]));
+    localStreamRef.current?.getTracks().forEach((track) => {
+      peer.addTrack(track, localStreamRef.current!);
+    });
+    peer.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit("voiceSignal", playerId, { type: "ice", candidate: event.candidate.toJSON() });
+      }
+    };
+    peer.ontrack = (event) => {
+      const stream = event.streams[0];
+      if (!stream || !audioContainerRef.current) {
+        return;
+      }
+
+      let audio = audioElementsRef.current.get(playerId);
+      if (!audio) {
+        audio = document.createElement("audio");
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.dataset.playerId = playerId;
+        audioContainerRef.current.appendChild(audio);
+        audioElementsRef.current.set(playerId, audio);
+      }
+      audio.srcObject = stream;
+      void audio.play().catch(() => undefined);
+    };
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "failed" || peer.connectionState === "disconnected" || peer.connectionState === "closed") {
+        closePeer(playerId);
+      }
+    };
+    return peer;
+  }
+
+  async function createOffer(playerId: string) {
+    const peer = ensurePeer(playerId);
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    socket.emit("voiceSignal", playerId, { type: "offer", sdp: offer.sdp || "" });
+  }
+
+  async function handleVoiceSignal(fromPlayerId: string, signal: VoiceSignalPayload) {
+    if (!enabledRef.current || !localStreamRef.current) {
+      return;
+    }
+
+    const peer = ensurePeer(fromPlayerId);
+    if (signal.type === "offer") {
+      await peer.setRemoteDescription({ type: "offer", sdp: signal.sdp });
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      socket.emit("voiceSignal", fromPlayerId, { type: "answer", sdp: answer.sdp || "" });
+      return;
+    }
+    if (signal.type === "answer") {
+      await peer.setRemoteDescription({ type: "answer", sdp: signal.sdp });
+      return;
+    }
+    await peer.addIceCandidate(signal.candidate).catch(() => undefined);
+  }
+
+  async function startVoice() {
+    if (!connected) {
+      setVoiceError("尚未連線，無法開啟語音。");
+      return;
+    }
+    if (enabledRef.current) {
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoiceError("這個瀏覽器不支援房內語音。");
+      return;
+    }
+
+    try {
+      setVoiceError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      localStreamRef.current = stream;
+      enabledRef.current = true;
+      mutedRef.current = false;
+      setMuted(false);
+      setEnabled(true);
+      socket.emit("voiceJoin");
+    } catch {
+      setVoiceError("沒有取得麥克風權限。");
+      stopVoice(false);
+    }
+  }
+
+  function stopVoice(notify = true) {
+    enabledRef.current = false;
+    setEnabled(false);
+    setMuted(false);
+    setPeerIds([]);
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    peerConnectionsRef.current.forEach((peer) => peer.close());
+    peerConnectionsRef.current.clear();
+    audioElementsRef.current.forEach((audio) => audio.remove());
+    audioElementsRef.current.clear();
+    if (notify) {
+      socket.emit("voiceLeave");
+    }
+  }
+
+  useEffect(() => {
+    const onVoicePeers = (players: string[]) => {
+      if (!enabledRef.current) {
+        return;
+      }
+      players.forEach((playerId) => {
+        void createOffer(playerId).catch(() => setVoiceError("語音連線建立失敗。"));
+      });
+    };
+    const onVoicePeerJoined = (playerId: string) => {
+      if (!enabledRef.current) {
+        return;
+      }
+      setPeerIds((current) => (current.includes(playerId) ? current : [...current, playerId]));
+    };
+    const onVoicePeerLeft = (playerId: string) => closePeer(playerId);
+    const onVoiceSignal = (fromPlayerId: string, signal: VoiceSignalPayload) => {
+      void handleVoiceSignal(fromPlayerId, signal).catch(() => setVoiceError("語音訊號交換失敗。"));
+    };
+
+    socket.on("voicePeers", onVoicePeers);
+    socket.on("voicePeerJoined", onVoicePeerJoined);
+    socket.on("voicePeerLeft", onVoicePeerLeft);
+    socket.on("voiceSignal", onVoiceSignal);
+    return () => {
+      socket.off("voicePeers", onVoicePeers);
+      socket.off("voicePeerJoined", onVoicePeerJoined);
+      socket.off("voicePeerLeft", onVoicePeerLeft);
+      socket.off("voiceSignal", onVoiceSignal);
+    };
+  }, [room.roomCode]);
+
+  useEffect(() => () => stopVoice(false), [room.roomCode]);
+
+  return (
+    <div className="voice-control">
+      <button
+        type="button"
+        className={enabled ? "icon-button voice-button active" : "icon-button voice-button"}
+        aria-label="語音設定"
+        title="語音設定"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {enabled ? <Mic size={17} /> : <Settings size={17} />}
+      </button>
+      {open ? (
+        <div className="voice-popover" role="dialog" aria-label="語音通話">
+          <div className="voice-head">
+            <strong>語音通話</strong>
+            <span>{enabled ? `已連線 ${peerIds.length + 1} 人` : "預設關閉"}</span>
+          </div>
+          <div className="voice-actions">
+            <button type="button" className={enabled ? "danger-button" : "primary-button"} disabled={!connected} onClick={() => (enabled ? stopVoice() : void startVoice())}>
+              {enabled ? <Volume2 size={17} /> : <Mic size={17} />}
+              {enabled ? "離開語音" : "開啟語音"}
+            </button>
+            {enabled ? (
+              <button type="button" className="secondary-button" onClick={() => setMuted((current) => !current)}>
+                {muted ? <Mic size={17} /> : <MicOff size={17} />}
+                {muted ? "取消靜音" : "靜音"}
+              </button>
+            ) : null}
+          </div>
+          <p className="voice-note">使用瀏覽器的麥克風權限，房內點開才會加入。</p>
+          {voiceError ? <p className="voice-error">{voiceError}</p> : null}
+        </div>
+      ) : null}
+      <div ref={audioContainerRef} className="voice-audio-sink" aria-hidden="true" />
+    </div>
   );
 }
 

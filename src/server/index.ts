@@ -47,6 +47,7 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEve
     methods: ["GET", "POST"]
   }
 });
+const voiceRooms = new Map<string, Set<string>>();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const staticDir = path.resolve(__dirname, "../../dist/client");
@@ -121,6 +122,34 @@ io.on("connection", (socket) => {
     runAction(socket, (room, playerId) => useLadyOfLake(room, playerId, targetId, announcedAllegiance))
   );
   socket.on("assassinate", (targetId) => runAction(socket, (room, playerId) => assassinate(room, playerId, targetId)));
+  socket.on("voiceJoin", () => {
+    const { roomCode, playerId } = socket.data;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    const player = playerId ? room?.players.get(playerId) : null;
+    if (!room || !playerId || !player || player.isBot) {
+      socket.emit("roomError", "無法加入語音。");
+      return;
+    }
+
+    const voicePeers = voiceRooms.get(room.code) || new Set<string>();
+    voiceRooms.set(room.code, voicePeers);
+    const existingPeers = [...voicePeers].filter((id) => id !== playerId && Boolean(room.players.get(id)?.socketId));
+    voicePeers.add(playerId);
+    socket.data.voiceEnabled = true;
+    touchRoom(room);
+    socket.emit("voicePeers", existingPeers);
+    socket.to(room.code).emit("voicePeerJoined", playerId);
+  });
+  socket.on("voiceLeave", () => leaveVoice(socket));
+  socket.on("voiceSignal", (targetPlayerId, signal) => {
+    const { roomCode, playerId } = socket.data;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    const target = targetPlayerId ? room?.players.get(targetPlayerId) : null;
+    if (!room || !playerId || !target?.socketId || !voiceRooms.get(room.code)?.has(playerId)) {
+      return;
+    }
+    io.to(target.socketId).emit("voiceSignal", playerId, signal);
+  });
   socket.on("resetRoom", () => runAction(socket, (room, playerId) => resetRoom(room, playerId)));
   socket.on("leaveRoom", () => {
     const { roomCode, playerId } = socket.data;
@@ -131,6 +160,7 @@ io.on("connection", (socket) => {
     }
 
     try {
+      leaveVoice(socket);
       const result = leaveRoom(room, playerId);
       socket.leave(room.code);
       socket.data.roomCode = undefined;
@@ -152,12 +182,33 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    leaveVoice(socket);
     const room = detachSocket(socket.id);
     if (room) {
       emitRoom(room.code);
     }
   });
 });
+
+function leaveVoice(socket: Parameters<Parameters<typeof io.on>[1]>[0]): void {
+  const { roomCode, playerId } = socket.data;
+  if (!roomCode || !playerId || !socket.data.voiceEnabled) {
+    return;
+  }
+
+  const voicePeers = voiceRooms.get(roomCode);
+  if (!voicePeers) {
+    socket.data.voiceEnabled = false;
+    return;
+  }
+
+  voicePeers.delete(playerId);
+  socket.data.voiceEnabled = false;
+  socket.to(roomCode).emit("voicePeerLeft", playerId);
+  if (voicePeers.size === 0) {
+    voiceRooms.delete(roomCode);
+  }
+}
 
 function runAction(
   socket: Parameters<Parameters<typeof io.on>[1]>[0],
@@ -192,6 +243,7 @@ function closeRoom(roomCode: string, message: string): void {
     return;
   }
   io.to(roomCode).emit("roomClosed", message);
+  voiceRooms.delete(roomCode);
   io.in(roomCode).socketsLeave(roomCode);
   rooms.delete(roomCode);
   emitLobbyRooms();

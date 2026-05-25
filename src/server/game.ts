@@ -1429,38 +1429,33 @@ function chooseBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): stri
 
 function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): string {
   const candidates = orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "good");
-  const hiddenMerlinLikePool = limitedAssassinationMerlinLikePool(room);
   const scored = candidates.map((player, index) => {
     let score = 0;
     score += assassinationReadScore(room, player);
-    score += (Math.random() - 0.5) * 1.25;
-    if (hiddenMerlinLikePool.size > 0) {
-      score += hiddenMerlinLikePool.has(player.id) ? 0.22 : -0.18;
-    }
+    score += (Math.random() - 0.5) * 1.8;
     return { player, score, index };
   });
   scored.sort((first, second) => second.score - first.score || first.index - second.index);
-  return scored[0].player.id;
+  const poolSize = Math.min(scored.length, Math.max(3, scored.length - 1));
+  return weightedAssassinationPick(scored.slice(0, poolSize)).player.id;
 }
 
-function limitedAssassinationMerlinLikePool(room: RoomInternal): Set<string> {
-  const goodPlayers = orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "good");
-  if (goodPlayers.length < 4) {
-    return new Set();
-  }
-
-  const targetSize = Math.max(2, goodPlayers.length - 1);
-  const pool: string[] = [];
-  const add = (player?: PlayerInternal) => {
-    if (player && !pool.includes(player.id) && pool.length < targetSize) {
-      pool.push(player.id);
+function weightedAssassinationPick(scored: Array<{ player: PlayerInternal; score: number; index: number }>): { player: PlayerInternal; score: number; index: number } {
+  const temperature = 1.55;
+  const maxScore = Math.max(...scored.map((item) => item.score));
+  const weighted = scored.map((item) => ({
+    item,
+    weight: Math.exp((item.score - maxScore) / temperature)
+  }));
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const item of weighted) {
+    roll -= item.weight;
+    if (roll <= 0) {
+      return item.item;
     }
-  };
-
-  add(goodPlayers.find((player) => player.role === "merlin"));
-  add(goodPlayers.find((player) => player.role === "percival"));
-  goodPlayers.filter((player) => player.role !== "merlin" && player.role !== "percival").forEach(add);
-  return new Set(pool);
+  }
+  return scored[0];
 }
 
 function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
@@ -1961,19 +1956,19 @@ function assassinationReadScore(room: RoomInternal, player: PlayerInternal): num
 
   for (const quest of room.game.quests) {
     if (quest.success && quest.team.includes(player.id)) {
-      score += 0.4;
+      score += 0.24;
     }
     if (!quest.success && quest.team.includes(player.id)) {
-      score -= 0.35;
+      score -= 0.22;
     }
   }
 
   for (const inspection of room.game.ladyInspections) {
     if (inspection.targetId === player.id && inspection.announcedAllegiance === "good") {
-      score += 0.35;
+      score += 0.18;
     }
     if (inspection.targetId === player.id && inspection.announcedAllegiance === "evil") {
-      score -= 0.45;
+      score -= 0.34;
     }
   }
 

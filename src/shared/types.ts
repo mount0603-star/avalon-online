@@ -172,6 +172,11 @@ export type LobbyRoomSummary = {
   updatedAt: number;
 };
 
+export type VoiceSignalPayload =
+  | { type: "offer"; sdp: string }
+  | { type: "answer"; sdp: string }
+  | { type: "ice"; candidate: RTCIceCandidateInit };
+
 export type ClientToServerEvents = {
   createRoom: (payload: CreateRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
   joinRoom: (payload: JoinRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
@@ -190,6 +195,9 @@ export type ClientToServerEvents = {
   useExcalibur: (targetId: string | null) => void;
   useLadyOfLake: (targetId: string, announcedAllegiance?: Allegiance | null) => void;
   assassinate: (targetId: string) => void;
+  voiceJoin: () => void;
+  voiceLeave: () => void;
+  voiceSignal: (targetPlayerId: string, signal: VoiceSignalPayload) => void;
   resetRoom: () => void;
   leaveRoom: () => void;
 };
@@ -199,6 +207,10 @@ export type ServerToClientEvents = {
   lobbyRooms: (rooms: LobbyRoomSummary[]) => void;
   roomError: (message: string) => void;
   roomClosed: (message: string) => void;
+  voicePeers: (playerIds: string[]) => void;
+  voicePeerJoined: (playerId: string) => void;
+  voicePeerLeft: (playerId: string) => void;
+  voiceSignal: (fromPlayerId: string, signal: VoiceSignalPayload) => void;
 };
 
 export type InterServerEvents = Record<string, never>;
@@ -206,4 +218,5 @@ export type InterServerEvents = Record<string, never>;
 export type SocketData = {
   roomCode?: string;
   playerId?: string;
+  voiceEnabled?: boolean;
 };
