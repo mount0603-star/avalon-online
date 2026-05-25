@@ -1261,6 +1261,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     const leader = leaderId ? room.players.get(leaderId) : null;
     if (leader?.isBot) {
       const apiTeam = await chooseApiBotTeam(room, leader);
+      if (room.game.phase !== "team-building" || currentLeaderId(room) !== leader.id || !room.players.has(leader.id)) {
+        return false;
+      }
       const team = apiTeam?.teamIds || chooseBotTeam(room, leader);
       const excaliburHolderId =
         room.game.excaliburEnabled ? apiTeam?.excaliburHolderId || chooseBotExcaliburHolder(room, leader, team) : null;
@@ -1273,7 +1276,19 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   if (room.game.phase === "team-vote") {
     const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
     if (bot) {
+      const proposedTeamKey = room.game.proposedTeam.join("|");
+      const voteHistoryLength = room.game.voteHistory.length;
+      const failedVoteCount = room.game.failedVoteCount;
       const apiVote = await chooseApiBotTeamVote(room, bot);
+      if (
+        room.game.phase !== "team-vote" ||
+        room.game.teamVotes[bot.id] !== undefined ||
+        room.game.proposedTeam.join("|") !== proposedTeamKey ||
+        room.game.voteHistory.length !== voteHistoryLength ||
+        room.game.failedVoteCount !== failedVoteCount
+      ) {
+        return false;
+      }
       let approve = apiVote?.approve ?? chooseBotTeamVote(room, bot);
       if (!approve && currentLeaderId(room) === bot.id && chance(0.86)) {
         approve = true;
@@ -1301,7 +1316,12 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   if (room.game.phase === "excalibur") {
     const holder = room.game.excaliburHolderId ? room.players.get(room.game.excaliburHolderId) : null;
     if (holder?.isBot) {
+      const holderId = holder.id;
+      const proposedTeamKey = room.game.proposedTeam.join("|");
       const apiChoice = await chooseApiBotExcaliburTarget(room, holder);
+      if (room.game.phase !== "excalibur" || room.game.excaliburHolderId !== holderId || room.game.proposedTeam.join("|") !== proposedTeamKey) {
+        return false;
+      }
       const targetId = apiChoice ? apiChoice.targetId : chooseBotExcaliburTarget(room, holder);
       useExcalibur(room, holder.id, targetId);
       addBotOpinion(
@@ -1321,9 +1341,13 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     }
     const holder = room.game.ladyHolderId ? room.players.get(room.game.ladyHolderId) : null;
     if (holder?.isBot) {
+      const holderId = holder.id;
       const targetId = chooseBotLadyTarget(room, holder);
       const target = room.players.get(targetId)!;
       const apiChoice = await chooseApiBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      if (room.game.phase !== "lady" || room.game.ladyHolderId !== holderId || room.game.ladyPendingResult) {
+        return false;
+      }
       const announcement = apiChoice?.announcement || chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
       useLadyOfLake(room, holder.id, targetId, announcement);
       addBotOpinion(room, holder, "lady", apiChoice?.message || botLadyOpinion(room, target, announcement), apiChoice ? "api" : "rules");
@@ -1335,6 +1359,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     const bot = assassinationVoters(room).find((player) => player.isBot && room.game.assassinationVotes[player.id] === undefined);
     if (bot) {
       const apiChoice = await chooseApiBotAssassinationTarget(room, bot);
+      if (room.game.phase !== "assassination" || room.game.assassinationVotes[bot.id] !== undefined) {
+        return false;
+      }
       const targetId = apiChoice?.targetId || chooseBotAssassinationTarget(room, bot);
       addBotOpinion(room, bot, "assassination", apiChoice?.message || botAssassinationOpinion(room, targetId), apiChoice ? "api" : "rules");
       assassinate(room, bot.id, targetId);

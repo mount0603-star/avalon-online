@@ -54,6 +54,7 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEve
 const voiceRooms = new Map<string, Set<string>>();
 const adminSpectators = new Map<string, Set<string>>();
 const adminLogs: AdminLogEntry[] = [];
+const botRunQueues = new Map<string, Promise<void>>();
 let nextAdminLogId = 1;
 type AppSocket = Parameters<Parameters<typeof io.on>[1]>[0];
 
@@ -346,13 +347,41 @@ function runAction(
 }
 
 async function runBotsAndEmit(room: NonNullable<ReturnType<typeof rooms.get>>): Promise<void> {
-  await runBotActionsForServer(room);
-  emitRoom(room.code);
-  emitLobbyRooms();
-  emitAdminSnapshot();
+  const roomCode = room.code;
+  const previousRun = botRunQueues.get(roomCode) || Promise.resolve();
+  const nextRun = previousRun
+    .catch(() => undefined)
+    .then(async () => {
+      const currentRoom = rooms.get(roomCode);
+      if (!currentRoom) {
+        return;
+      }
+
+      try {
+        await runBotActionsForServer(currentRoom);
+      } catch (error) {
+        recordAdminLog(`電腦行動失敗：${getErrorMessage(error)}`, roomCode, "error");
+      }
+
+      if (!rooms.has(roomCode)) {
+        return;
+      }
+      emitRoom(roomCode);
+      emitLobbyRooms();
+      emitAdminSnapshot();
+    });
+
+  botRunQueues.set(roomCode, nextRun);
+  void nextRun.finally(() => {
+    if (botRunQueues.get(roomCode) === nextRun) {
+      botRunQueues.delete(roomCode);
+    }
+  });
+  return nextRun;
 }
 
 function closeRoom(roomCode: string, message: string): void {
+  botRunQueues.delete(roomCode);
   if (!rooms.has(roomCode)) {
     return;
   }

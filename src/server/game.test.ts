@@ -11,6 +11,7 @@ import {
   addBot,
   removeBot,
   runBotActions,
+  runBotActionsForServer,
   updateTeamDraft,
   useLadyOfLake,
   useExcalibur,
@@ -421,6 +422,54 @@ test("good bot avoids random rejection on the final team vote", () => {
     runBotActions(room);
   } finally {
     Math.random = random;
+  }
+
+  assert.equal(room.game.teamVotes[botId], true);
+});
+
+test("stale API bot team vote is ignored if the bot already voted", async () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  setBotAiSettings(room, hostId, {
+    enabled: true,
+    provider: "custom",
+    baseUrl: "https://example.test/v1",
+    apiKey: "sk-test",
+    model: "test-model"
+  });
+  startGame(room, hostId);
+  const botId = room.game.playerOrder[0];
+  room.players.get(botId)!.isBot = true;
+  room.game.phase = "team-vote";
+  room.game.proposedTeam = room.game.playerOrder.slice(0, 2);
+  room.game.teamVotes = {};
+
+  const originalFetch = globalThis.fetch;
+  let markFetchStarted!: () => void;
+  let releaseFetch!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => {
+    markFetchStarted = resolve;
+  });
+  const fetchReleased = new Promise<void>((resolve) => {
+    releaseFetch = resolve;
+  });
+  globalThis.fetch = (async () => {
+    markFetchStarted();
+    await fetchReleased;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "{\"approve\":false,\"message\":\"我想再看一輪\"}" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  try {
+    const botRun = runBotActionsForServer(room);
+    await fetchStarted;
+    castTeamVote(room, botId, true);
+    releaseFetch();
+    await botRun;
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 
   assert.equal(room.game.teamVotes[botId], true);
