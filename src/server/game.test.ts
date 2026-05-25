@@ -94,10 +94,18 @@ test("bot leaders can propose a legal team", () => {
   startGame(room, hostId);
   const botLeaderIndex = room.game.playerOrder.findIndex((id) => room.players.get(id)?.isBot);
   room.game.leaderIndex = botLeaderIndex;
+  const leaderId = room.game.playerOrder[botLeaderIndex];
 
-  assert.equal(runBotActions(room), true);
+  const originalRandom = Math.random;
+  Math.random = () => 0.5;
+  try {
+    assert.equal(runBotActions(room), true);
+  } finally {
+    Math.random = originalRandom;
+  }
   assert.equal(room.game.phase, "team-vote");
   assert.equal(room.game.proposedTeam.length, 2);
+  assert.equal(room.game.teamVotes[leaderId], true);
 });
 
 test("bot display names match their visible seat order", () => {

@@ -1109,7 +1109,10 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
     if (bot) {
       const apiVote = await chooseApiBotTeamVote(room, bot);
-      const approve = apiVote?.approve ?? chooseBotTeamVote(room, bot);
+      let approve = apiVote?.approve ?? chooseBotTeamVote(room, bot);
+      if (!approve && currentLeaderId(room) === bot.id && chance(0.86)) {
+        approve = true;
+      }
       const opinion = apiVote?.message || botTeamVoteOpinion(room, bot, approve);
       castTeamVote(room, bot.id, approve);
       if (apiVote || !approve || chance(0.28)) {
@@ -1206,6 +1209,20 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const condemnedOnTeam = team.some((player) => privateEvil.has(player.id));
   const critical = isCriticalMoment(room);
   const opening = isOpeningRound(room);
+  const proposedBySelf = currentLeaderId(room) === bot.id;
+
+  if (proposedBySelf) {
+    if (bot.role && playerAllegiance(room, bot) === "evil") {
+      return chance(selfOnTeam ? 0.95 : critical ? 0.88 : 0.82);
+    }
+    if (knownEvilCount > 0 || condemnedOnTeam) {
+      return chance(opening ? 0.7 : critical ? 0.42 : 0.58);
+    }
+    if (suspiciousCount > 1) {
+      return chance(critical ? 0.62 : 0.76);
+    }
+    return chance(selfOnTeam || trustedGoodOnTeam ? 0.96 : 0.88);
+  }
 
   if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
     return chance(knownEvilCount > 0 || condemnedOnTeam ? 0.5 : 0.92);
@@ -1272,6 +1289,10 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
   const knownEvil = knownEvilIds(room, bot);
   const condemned = privateLadyEvilIds(room, bot);
   const hasKnownIssue = room.game.proposedTeam.some((id) => knownEvil.has(id) || condemned.has(id));
+  const hasSuspiciousIssue = room.game.proposedTeam.some((id) => {
+    const player = room.players.get(id);
+    return player && player.id !== bot.id && botSuspicionScore(room, bot, player) >= 1;
+  });
   if (approve) {
     if (playerAllegiance(room, bot) === "evil") {
       return pickLine([
@@ -1285,8 +1306,13 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
     }
     return pickLine([`這隊目前看起來可以先跑。`, `我同意這組，資訊線比較乾淨。`, `先讓這隊執行，後面再對紀錄。`]);
   }
-  if (hasKnownIssue && playerAllegiance(room, bot) === "good") {
-    return pickLine([`我反對這隊，${teamNames} 裡有我不放心的位置。`, `這隊我不想放過，裡面有需要避開的人。`]);
+  if ((hasKnownIssue || hasSuspiciousIssue) && playerAllegiance(room, bot) === "good") {
+    return pickLine([
+      `我反對這隊，${teamNames} 裡有我不放心的位置。`,
+      `這隊我不想放過，裡面有需要避開的人。`,
+      `我不喜歡這組的資訊組合，先反對。`,
+      `這組目前風險偏高，我想換一隊。`
+    ]);
   }
   if (playerAllegiance(room, bot) === "evil") {
     return isCriticalMoment(room)

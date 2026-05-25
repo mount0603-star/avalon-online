@@ -1383,6 +1383,11 @@ select {
   border-left-color: rgba(76, 167, 165, 0.28);
 }
 
+.inline-team-build-action {
+  flex-basis: min(500px, 48%);
+  border-left-color: rgba(213, 168, 59, 0.3);
+}
+
 .inline-lady-action {
   border-left-color: rgba(76, 167, 165, 0.34);
 }
@@ -1441,6 +1446,27 @@ select {
 .inline-wide-button {
   width: 100%;
   min-height: 46px;
+}
+
+.inline-excalibur-picker {
+  display: grid;
+  gap: 6px;
+}
+
+.inline-excalibur-picker > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.inline-excalibur-picker > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 7px;
+}
+
+.inline-excalibur-picker .select-player {
+  min-height: 40px;
 }
 
 .knowledge-line {

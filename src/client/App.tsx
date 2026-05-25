@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Bot,
   Check,
@@ -462,6 +462,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
   const isLobby = room.game.phase === "lobby";
   const [teamDraft, setTeamDraft] = useState<string[]>([]);
   const [excaliburHolderId, setExcaliburHolderId] = useState<string | null>(null);
+  const lastTeamDraftClickRef = useRef<{ playerId: string; at: number } | null>(null);
   const isTeamDrafting = room.game.phase === "team-building" && room.you?.id === room.game.leaderId;
   const excaliburCandidates = teamDraft.filter((id) => id !== room.game.leaderId);
 
@@ -488,6 +489,12 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
     if (!isTeamDrafting) {
       return;
     }
+    const now = Date.now();
+    const lastClick = lastTeamDraftClickRef.current;
+    if (lastClick?.playerId === playerId && now - lastClick.at < 320) {
+      return;
+    }
+    lastTeamDraftClickRef.current = { playerId, at: now };
     setTeamDraft((current) => {
       let next: string[];
       if (current.includes(playerId)) {
@@ -556,7 +563,12 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
         </aside>
 
         <section className="play-panel">
-          <RoleCard room={room} />
+          <RoleCard
+            room={room}
+            teamDraft={teamDraft}
+            excaliburHolderId={excaliburHolderId}
+            setExcaliburHolderId={setExcaliburHolderId}
+          />
           {room.game.phase === "assassination" ? <PublicEvilReveal room={room} /> : null}
           <MissionBoard room={room} />
           <PhasePanel
@@ -1021,7 +1033,17 @@ function PublicEvilReveal({ room }: { room: RoomView }) {
   );
 }
 
-function RoleCard({ room }: { room: RoomView }) {
+function RoleCard({
+  room,
+  teamDraft,
+  excaliburHolderId,
+  setExcaliburHolderId
+}: {
+  room: RoomView;
+  teamDraft: string[];
+  excaliburHolderId: string | null;
+  setExcaliburHolderId: (value: string | null) => void;
+}) {
   if (room.game.phase === "lobby") {
     return (
       <div className="identity-panel idle">
@@ -1075,7 +1097,12 @@ function RoleCard({ room }: { room: RoomView }) {
           ) : null}
         </div>
       </div>
-      <InlineTurnAction room={room} />
+      <InlineTurnAction
+        room={room}
+        teamDraft={teamDraft}
+        excaliburHolderId={excaliburHolderId}
+        setExcaliburHolderId={setExcaliburHolderId}
+      />
     </div>
   );
 }
@@ -1112,7 +1139,7 @@ function PhasePanel({
     return <LobbyPanel room={room} />;
   }
   if (room.game.phase === "team-building") {
-    return <TeamBuilder room={room} selected={teamDraft} excaliburHolderId={excaliburHolderId} setExcaliburHolderId={setExcaliburHolderId} />;
+    return null;
   }
   if (room.game.phase === "team-vote") {
     return null;
@@ -1567,14 +1594,35 @@ function TeamNames({ room }: { room: RoomView }) {
   );
 }
 
-function InlineTurnAction({ room }: { room: RoomView }) {
+function InlineTurnAction({
+  room,
+  teamDraft,
+  excaliburHolderId,
+  setExcaliburHolderId
+}: {
+  room: RoomView;
+  teamDraft: string[];
+  excaliburHolderId: string | null;
+  setExcaliburHolderId: (value: string | null) => void;
+}) {
   const youId = room.you?.id || "";
+  const isTeamBuilding = room.game.phase === "team-building";
   const isVoting = room.game.phase === "team-vote";
   const isMission = room.game.phase === "mission";
   const isLady = room.game.phase === "lady";
   const voted = room.game.teamVotesSubmitted.includes(youId);
   const onMission = room.game.proposedTeam.includes(youId);
   const missionSubmitted = room.game.missionVotesSubmitted.includes(youId);
+  if (isTeamBuilding) {
+    return (
+      <InlineTeamBuilderAction
+        room={room}
+        selected={teamDraft}
+        excaliburHolderId={excaliburHolderId}
+        setExcaliburHolderId={setExcaliburHolderId}
+      />
+    );
+  }
   if (isLady) {
     return <InlineLadyAction room={room} />;
   }
@@ -1634,6 +1682,65 @@ function InlineTurnAction({ room }: { room: RoomView }) {
             反對
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function InlineTeamBuilderAction({
+  room,
+  selected,
+  excaliburHolderId,
+  setExcaliburHolderId
+}: {
+  room: RoomView;
+  selected: string[];
+  excaliburHolderId: string | null;
+  setExcaliburHolderId: (value: string | null) => void;
+}) {
+  const isLeader = room.you?.id === room.game.leaderId;
+  const teamSize = room.game.teamSize;
+  const needsExcaliburHolder = room.game.excaliburEnabled;
+  const excaliburCandidates = selected.filter((id) => id !== room.game.leaderId);
+  const selectedNames = selected.length > 0 ? selected.map((id) => playerName(room, id)).join("、") : "尚未選人";
+
+  return (
+    <div className="inline-turn-action inline-team-build-action">
+      <div className="inline-action-summary">
+        <strong>第 {room.game.questIndex + 1} 次組隊</strong>
+        <span>{isLeader ? "點左邊玩家卡片選人" : `隊長：${playerName(room, room.game.leaderId)}`}</span>
+        <small>
+          {selected.length}/{teamSize} {selectedNames}
+        </small>
+      </div>
+      {needsExcaliburHolder && isLeader && excaliburCandidates.length > 0 ? (
+        <div className="inline-excalibur-picker">
+          <span>王者之劍</span>
+          <div>
+            {excaliburCandidates.map((id) => (
+              <button
+                className={excaliburHolderId === id ? "select-player selected" : "select-player"}
+                key={id}
+                onClick={() => setExcaliburHolderId(id)}
+              >
+                <Swords size={16} />
+                {playerName(room, id)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {isLeader ? (
+        <button
+          className="primary-button inline-wide-button"
+          disabled={selected.length !== teamSize || (needsExcaliburHolder && !excaliburHolderId)}
+          onClick={() => socket.emit("proposeTeam", selected, excaliburHolderId)}
+        >
+          <Vote size={18} />
+          提交隊伍 {selected.length}/{teamSize}
+        </button>
+      ) : (
+        <span className="inline-action-waiting">等待隊長提交</span>
       )}
     </div>
   );
