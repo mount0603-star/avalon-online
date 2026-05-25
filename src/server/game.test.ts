@@ -357,6 +357,75 @@ test("percival bot can infer from a merlin candidate rejecting a failed team", (
   assert.equal(room.game.proposedTeam.includes(assassinId), false);
 });
 
+test("bot avoids players who approved a failed team from outside", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E", "F", "G"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [leaderId, rejectAId, rejectBId, rejectCId, offTeamApproverId, failedAId, failedBId] = room.game.playerOrder;
+  room.players.get(leaderId)!.isBot = true;
+  room.game.leaderIndex = 0;
+  room.game.questIndex = 1;
+  room.game.phase = "team-building";
+  room.game.voteHistory = [
+    {
+      round: 1,
+      leaderId: failedAId,
+      team: [failedAId, failedBId],
+      approvals: [failedAId, failedBId, offTeamApproverId],
+      rejections: [leaderId, rejectAId, rejectBId, rejectCId],
+      approved: true
+    }
+  ];
+  room.game.quests = [
+    {
+      index: 0,
+      team: [failedAId, failedBId],
+      success: false,
+      failCount: 1,
+      failThreshold: 1,
+      excaliburHolderId: null,
+      excaliburTargetId: null
+    }
+  ];
+
+  const random = Math.random;
+  Math.random = () => 0.5;
+  try {
+    runBotActions(room);
+  } finally {
+    Math.random = random;
+  }
+
+  const rejectedPlayersIncluded = [rejectAId, rejectBId, rejectCId].filter((id) => room.game.proposedTeam.includes(id)).length;
+  assert.equal(rejectedPlayersIncluded, 2);
+  assert.equal(room.game.proposedTeam.includes(offTeamApproverId), false);
+});
+
+test("good bot avoids random rejection on the final team vote", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [botId, firstTeamId, secondTeamId] = room.game.playerOrder;
+  room.players.get(botId)!.isBot = true;
+  room.players.get(botId)!.role = "loyal";
+  room.players.get(firstTeamId)!.role = "loyal";
+  room.players.get(secondTeamId)!.role = "loyal";
+  room.game.phase = "team-vote";
+  room.game.proposedTeam = [firstTeamId, secondTeamId];
+  room.game.teamVotes = {};
+  room.game.failedVoteCount = 4;
+
+  const random = Math.random;
+  Math.random = () => 0.95;
+  try {
+    runBotActions(room);
+  } finally {
+    Math.random = random;
+  }
+
+  assert.equal(room.game.teamVotes[botId], true);
+});
+
 test("lancelot option swaps current allegiance when a loyalty card switches", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E", "F", "G"].forEach((name) => joinRoom(room.code, name));

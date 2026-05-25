@@ -1365,6 +1365,7 @@ function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
 
 function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const team = room.game.proposedTeam.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
+  const teamIds = team.map((player) => player.id);
   const selfOnTeam = team.some((player) => player.id === bot.id);
   const suspiciousCount = team.filter((player) => player.id !== bot.id && botSuspicionScore(room, bot, player) >= 1).length;
   const knownEvil = knownEvilIds(room, bot);
@@ -1379,6 +1380,7 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const critical = isCriticalMoment(room);
   const opening = isOpeningRound(room);
   const proposedBySelf = currentLeaderId(room) === bot.id;
+  const carryoverRisk = failedTeamCarryoverRisk(room, bot, teamIds);
 
   if (proposedBySelf) {
     if (bot.role && playerAllegiance(room, bot) === "evil") {
@@ -1394,7 +1396,8 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   }
 
   if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
-    return chance(knownEvilCount > 0 || condemnedOnTeam ? 0.5 : 0.92);
+    const hardIssue = knownEvilCount > 0 || condemnedOnTeam || suspiciousCount >= 2 || carryoverRisk >= 1.35;
+    return chance(hardIssue ? 0.42 : 0.98);
   }
 
   if (bot.role && playerAllegiance(room, bot) === "evil") {
@@ -1409,6 +1412,10 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
       return chance(critical ? 0.42 : 0.58);
     }
     return chance(opening ? 0.46 : critical ? 0.12 : 0.32);
+  }
+
+  if ((!bot.role || playerAllegiance(room, bot) === "good") && carryoverRisk >= 1.35 && !trustedGoodOnTeam && !strongNudgeTeam) {
+    return chance(critical ? 0.08 : 0.22);
   }
 
   if (bot.role === "merlin") {
@@ -1455,6 +1462,7 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
 
 function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = false): string {
   const teamNames = room.game.proposedTeam.map((id) => room.players.get(id)?.name || "未知").join("、");
+  const carryoverRisk = failedTeamCarryoverRisk(room, bot, room.game.proposedTeam);
   const otherTeamNames =
     room.game.proposedTeam
       .filter((id) => id !== bot.id)
@@ -1487,6 +1495,9 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
     return player && player.id !== bot.id && botSuspicionScore(room, bot, player) >= 1;
   });
   if (approve) {
+    if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
+      return pickLine([`已經尾派了，這隊沒有硬傷就先過。`, `再否決就太危險，先讓任務給資訊。`, `尾派我會保守一點，先讓它跑。`]);
+    }
     if (playerAllegiance(room, bot) === "evil") {
       return pickLine([
         `這隊可以先跑，資訊會更清楚。`,
@@ -1504,7 +1515,13 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
     if (hasKnownIssue) {
       return pickLine([`我先不把話說死，這隊跑完會有更多資訊。`, `這組有風險，但現在先看結果。`]);
     }
+    if (carryoverRisk <= -0.35) {
+      return pickLine([`這隊有把前面的失敗組合拆開，可以看。`, `這組有換掉前面比較髒的位置，先跑。`, `前面那隊有調整過，我先給過。`]);
+    }
     return pickLine([`這隊目前看起來可以先跑。`, `我同意這組，資訊線比較乾淨。`, `先讓這隊執行，後面再對紀錄。`]);
+  }
+  if (carryoverRisk >= 1.25 && playerAllegiance(room, bot) === "good") {
+    return pickLine([`上一隊失敗，這隊改動不夠，我先擋。`, `這組跟前面失敗隊重疊太多，我反對。`, `前面的問題還沒拆開，這隊我不放。`]);
   }
   if (flaggedOnTeam.length > 0 && playerAllegiance(room, bot) === "good") {
     const names = flaggedOnTeam.join("、");
@@ -2136,7 +2153,12 @@ function publicGoodLeanScore(room: RoomInternal, bot: PlayerInternal, player: Pl
     if (!quest.success && onTeam && vote.approvals.includes(player.id)) {
       score -= 0.55;
     }
+    if (!quest.success && !onTeam && vote.rejections.includes(player.id)) {
+      score += 0.28;
+    }
   });
+
+  score -= publicVoteBehaviorSuspicion(room, player) * 0.35;
 
   if (bot.role === "percival" && (player.role === "merlin" || player.role === "morgana")) {
     score += percivalMerlinSignalScore(room, bot, player) * 0.65;
@@ -2384,8 +2406,99 @@ function botSuspicionScoreWithoutPercivalCandidateSignals(room: RoomInternal, bo
   }
 
   score += publicLadyClaimSuspicion(room, bot, player);
+  score += publicVoteBehaviorSuspicion(room, player);
 
   return Math.max(0, score);
+}
+
+function publicVoteBehaviorSuspicion(room: RoomInternal, player: PlayerInternal): number {
+  let score = 0;
+  const approvedVotes = room.game.voteHistory.filter((vote) => vote.approved);
+
+  approvedVotes.forEach((vote, questOrder) => {
+    const quest = room.game.quests[questOrder];
+    const onTeam = vote.team.includes(player.id);
+    const approved = vote.approvals.includes(player.id);
+    const rejected = vote.rejections.includes(player.id);
+
+    if (onTeam && rejected) {
+      score += quest ? (quest.success ? 0.55 : -0.45) : 0.24;
+      if (vote.leaderId === player.id) {
+        score += 0.55;
+      }
+    }
+
+    if (!onTeam && approved) {
+      score += quest ? (quest.success ? -0.12 : 0.55) : 0.18;
+    }
+
+    if (!quest) {
+      return;
+    }
+
+    if (!quest.success && onTeam && approved) {
+      score += 0.25;
+    }
+    if (!quest.success && !onTeam && rejected) {
+      score -= 0.22;
+    }
+  });
+
+  return score;
+}
+
+function latestFailedQuest(room: RoomInternal): QuestResult | null {
+  for (let index = room.game.quests.length - 1; index >= 0; index -= 1) {
+    const quest = room.game.quests[index];
+    if (!quest.success) {
+      return quest;
+    }
+  }
+  return null;
+}
+
+function failedTeamCarryoverRisk(room: RoomInternal, bot: PlayerInternal, teamIds: string[]): number {
+  const failedQuest = latestFailedQuest(room);
+  if (!failedQuest) {
+    return 0;
+  }
+
+  const failedTeam = new Set(failedQuest.team);
+  const currentTeam = new Set(teamIds);
+  const kept = failedQuest.team.filter((id) => currentTeam.has(id));
+  const removed = failedQuest.team.filter((id) => !currentTeam.has(id));
+  const added = teamIds.filter((id) => !failedTeam.has(id));
+  let risk = 0;
+
+  if (kept.length === failedQuest.team.length && teamIds.length >= failedQuest.team.length) {
+    risk += failedQuest.failCount >= 2 ? 1.7 : 1.15;
+  } else if (kept.length >= Math.max(1, failedQuest.team.length - 1) && added.length <= 1) {
+    risk += failedQuest.failCount >= 2 ? 1.25 : 0.65;
+  } else if (removed.length >= 1 && added.length >= 1) {
+    risk -= 0.28;
+  }
+
+  for (const id of kept) {
+    const player = room.players.get(id);
+    if (player && player.id !== bot.id) {
+      risk += Math.min(0.75, botSuspicionScoreWithoutPercivalCandidateSignals(room, bot, player) * 0.18);
+    }
+  }
+
+  for (const id of removed) {
+    const player = room.players.get(id);
+    if (player && botSuspicionScoreWithoutPercivalCandidateSignals(room, bot, player) >= 1.1) {
+      risk -= 0.38;
+    }
+  }
+
+  for (const id of added) {
+    if (privateLadyGoodIds(room, bot).has(id) || id === deducedMerlinIdForPercival(room, bot)) {
+      risk -= 0.35;
+    }
+  }
+
+  return risk;
 }
 
 function publicLadyClaimSuspicion(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
