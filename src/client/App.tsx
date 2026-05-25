@@ -463,10 +463,22 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
   const [teamDraft, setTeamDraft] = useState<string[]>([]);
   const [excaliburHolderId, setExcaliburHolderId] = useState<string | null>(null);
   const lastTeamDraftClickRef = useRef<{ playerId: string; at: number } | null>(null);
+  const localTeamDraftUntilRef = useRef(0);
   const isTeamDrafting = room.game.phase === "team-building" && room.you?.id === room.game.leaderId;
   const excaliburCandidates = teamDraft.filter((id) => id !== room.game.leaderId);
 
+  function markLocalTeamDraftChange() {
+    localTeamDraftUntilRef.current = Date.now() + 1600;
+  }
+
+  function updateExcaliburHolder(nextHolderId: string | null) {
+    markLocalTeamDraftChange();
+    setExcaliburHolderId(nextHolderId);
+  }
+
   useEffect(() => {
+    localTeamDraftUntilRef.current = 0;
+    lastTeamDraftClickRef.current = null;
     setTeamDraft([]);
     setExcaliburHolderId(null);
   }, [room.roomCode, room.game.phase, room.game.questIndex, room.game.leaderId, room.game.teamSize]);
@@ -475,9 +487,24 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
     if (room.game.phase !== "team-building") {
       return;
     }
-    setTeamDraft(room.game.proposedTeam);
-    setExcaliburHolderId(room.game.excaliburHolderId);
-  }, [room.game.phase, room.game.proposedTeam, room.game.excaliburHolderId]);
+    const serverDraftKey = room.game.proposedTeam.join("\u0001");
+    const localDraftKey = teamDraft.join("\u0001");
+    const serverHolderId = room.game.excaliburHolderId;
+    const hasFreshLocalDraft =
+      isTeamDrafting &&
+      Date.now() < localTeamDraftUntilRef.current &&
+      (serverDraftKey !== localDraftKey || serverHolderId !== excaliburHolderId);
+
+    if (hasFreshLocalDraft) {
+      return;
+    }
+    if (serverDraftKey !== localDraftKey) {
+      setTeamDraft(room.game.proposedTeam);
+    }
+    if (serverHolderId !== excaliburHolderId) {
+      setExcaliburHolderId(serverHolderId);
+    }
+  }, [room.game.phase, room.game.proposedTeam, room.game.excaliburHolderId, teamDraft, excaliburHolderId, isTeamDrafting]);
 
   useEffect(() => {
     if (excaliburHolderId && !excaliburCandidates.includes(excaliburHolderId)) {
@@ -504,8 +531,11 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
       } else {
         next = [...current, playerId];
       }
+      if (next !== current) {
+        markLocalTeamDraftChange();
+      }
       if (excaliburHolderId && !next.includes(excaliburHolderId)) {
-        setExcaliburHolderId(null);
+        updateExcaliburHolder(null);
       }
       return next;
     });
@@ -567,7 +597,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
             room={room}
             teamDraft={teamDraft}
             excaliburHolderId={excaliburHolderId}
-            setExcaliburHolderId={setExcaliburHolderId}
+            setExcaliburHolderId={updateExcaliburHolder}
           />
           {room.game.phase === "assassination" ? <PublicEvilReveal room={room} /> : null}
           <MissionBoard room={room} />
