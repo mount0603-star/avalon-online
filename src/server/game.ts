@@ -934,12 +934,19 @@ function finishGame(room: RoomInternal, winner: "good" | "evil", reason: string)
   room.game.winReason = reason;
 }
 
-function addBotOpinion(room: RoomInternal, player: PlayerInternal, phase: BotOpinion["phase"], message: string): void {
+function addBotOpinion(
+  room: RoomInternal,
+  player: PlayerInternal,
+  phase: BotOpinion["phase"],
+  message: string,
+  source: BotOpinion["source"] = "rules"
+): void {
   room.game.botOpinions.push({
     id: room.game.botOpinions.length + 1,
     playerId: player.id,
     phase,
-    message
+    message,
+    source
   });
   if (room.game.botOpinions.length > 12) {
     room.game.botOpinions = room.game.botOpinions.slice(-12);
@@ -1019,10 +1026,10 @@ function runOneBotAction(room: RoomInternal): boolean {
     const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
     if (bot) {
       const approve = chooseBotTeamVote(room, bot);
-      const opinion = approve ? null : botTeamVoteOpinion(room, bot);
+      const opinion = botTeamVoteOpinion(room, bot, approve);
       castTeamVote(room, bot.id, approve);
-      if (!approve) {
-        addBotOpinion(room, bot, "team-vote", opinion!);
+      if (!approve || chance(0.28)) {
+        addBotOpinion(room, bot, "team-vote", opinion);
       }
       return true;
     }
@@ -1047,7 +1054,7 @@ function runOneBotAction(room: RoomInternal): boolean {
         room,
         holder,
         "excalibur",
-        targetId ? `我用王者之劍更換 ${room.players.get(targetId)?.name || "一名隊員"} 的任務卡。` : "我不使用王者之劍。"
+        botExcaliburOpinion(room, targetId)
       );
       return true;
     }
@@ -1063,7 +1070,7 @@ function runOneBotAction(room: RoomInternal): boolean {
       const target = room.players.get(targetId)!;
       const announcement = chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
       useLadyOfLake(room, holder.id, targetId, announcement);
-      addBotOpinion(room, holder, "lady", `我查看 ${target.name}，我宣告他是${announcement === "good" ? "好人" : "邪惡"}陣營。`);
+      addBotOpinion(room, holder, "lady", botLadyOpinion(room, target, announcement));
       return true;
     }
   }
@@ -1072,7 +1079,7 @@ function runOneBotAction(room: RoomInternal): boolean {
     const bot = assassinationVoters(room).find((player) => player.isBot && room.game.assassinationVotes[player.id] === undefined);
     if (bot) {
       const targetId = chooseBotAssassinationTarget(room, bot);
-      addBotOpinion(room, bot, "assassination", `我猜 ${room.players.get(targetId)?.name || "這名玩家"} 是梅林。`);
+      addBotOpinion(room, bot, "assassination", botAssassinationOpinion(room, targetId));
       assassinate(room, bot.id, targetId);
       return true;
     }
@@ -1091,8 +1098,8 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
       const excaliburHolderId =
         room.game.excaliburEnabled ? apiTeam?.excaliburHolderId || chooseBotExcaliburHolder(room, leader, team) : null;
       proposeTeam(room, leader.id, team, excaliburHolderId);
-      if (apiTeam?.message) {
-        addBotOpinion(room, leader, "team-vote", apiTeam.message);
+      if (apiTeam?.message || apiTeam || chance(0.22)) {
+        addBotOpinion(room, leader, "team-vote", apiTeam?.message || botProposeTeamOpinion(room, leader, team), apiTeam ? "api" : "rules");
       }
       return true;
     }
@@ -1103,10 +1110,10 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     if (bot) {
       const apiVote = await chooseApiBotTeamVote(room, bot);
       const approve = apiVote?.approve ?? chooseBotTeamVote(room, bot);
-      const opinion = apiVote?.message || (approve ? null : botTeamVoteOpinion(room, bot));
+      const opinion = apiVote?.message || botTeamVoteOpinion(room, bot, approve);
       castTeamVote(room, bot.id, approve);
-      if (opinion && !approve) {
-        addBotOpinion(room, bot, "team-vote", opinion);
+      if (apiVote || !approve || chance(0.28)) {
+        addBotOpinion(room, bot, "team-vote", opinion, apiVote ? "api" : "rules");
       }
       return true;
     }
@@ -1125,14 +1132,15 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   if (room.game.phase === "excalibur") {
     const holder = room.game.excaliburHolderId ? room.players.get(room.game.excaliburHolderId) : null;
     if (holder?.isBot) {
-      const apiTargetId = await chooseApiBotExcaliburTarget(room, holder);
-      const targetId = apiTargetId === undefined ? chooseBotExcaliburTarget(room, holder) : apiTargetId;
+      const apiChoice = await chooseApiBotExcaliburTarget(room, holder);
+      const targetId = apiChoice ? apiChoice.targetId : chooseBotExcaliburTarget(room, holder);
       useExcalibur(room, holder.id, targetId);
       addBotOpinion(
         room,
         holder,
         "excalibur",
-        targetId ? `我想換掉 ${room.players.get(targetId)?.name || "一名隊員"} 的任務卡，看看結果會不會更合理。` : "我先不動王者之劍，保留原本任務卡。"
+        apiChoice?.message || botExcaliburOpinion(room, targetId),
+        apiChoice ? "api" : "rules"
       );
       return true;
     }
@@ -1146,10 +1154,10 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
     if (holder?.isBot) {
       const targetId = chooseBotLadyTarget(room, holder);
       const target = room.players.get(targetId)!;
-      const apiAnnouncement = await chooseApiBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
-      const announcement = apiAnnouncement || chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      const apiChoice = await chooseApiBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
+      const announcement = apiChoice?.announcement || chooseBotLadyAnnouncement(room, holder, target, playerAllegiance(room, target));
       useLadyOfLake(room, holder.id, targetId, announcement);
-      addBotOpinion(room, holder, "lady", `我查看 ${target.name}，我的公開說法是${announcement === "good" ? "好人" : "可疑"}。`);
+      addBotOpinion(room, holder, "lady", apiChoice?.message || botLadyOpinion(room, target, announcement), apiChoice ? "api" : "rules");
       return true;
     }
   }
@@ -1157,8 +1165,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   if (room.game.phase === "assassination") {
     const bot = assassinationVoters(room).find((player) => player.isBot && room.game.assassinationVotes[player.id] === undefined);
     if (bot) {
-      const targetId = (await chooseApiBotAssassinationTarget(room, bot)) || chooseBotAssassinationTarget(room, bot);
-      addBotOpinion(room, bot, "assassination", `我最後會投 ${room.players.get(targetId)?.name || "這名玩家"}。`);
+      const apiChoice = await chooseApiBotAssassinationTarget(room, bot);
+      const targetId = apiChoice?.targetId || chooseBotAssassinationTarget(room, bot);
+      addBotOpinion(room, bot, "assassination", apiChoice?.message || botAssassinationOpinion(room, targetId), apiChoice ? "api" : "rules");
       assassinate(room, bot.id, targetId);
       return true;
     }
@@ -1258,21 +1267,69 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   return chance(selfOnTeam || trustedGoodOnTeam ? 0.9 : opening ? 0.82 : 0.74);
 }
 
-function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal): string {
+function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = false): string {
   const teamNames = room.game.proposedTeam.map((id) => room.players.get(id)?.name || "未知").join("、");
   const knownEvil = knownEvilIds(room, bot);
   const condemned = privateLadyEvilIds(room, bot);
   const hasKnownIssue = room.game.proposedTeam.some((id) => knownEvil.has(id) || condemned.has(id));
+  if (approve) {
+    if (playerAllegiance(room, bot) === "evil") {
+      return pickLine([
+        `這隊可以先跑，資訊會更清楚。`,
+        `我可以接受 ${teamNames}，先讓任務給答案。`,
+        `這組暫時說得過去，先通過看結果。`
+      ]);
+    }
+    if (hasKnownIssue) {
+      return pickLine([`我先不把話說死，這隊跑完會有更多資訊。`, `這組有風險，但現在先看結果。`]);
+    }
+    return pickLine([`這隊目前看起來可以先跑。`, `我同意這組，資訊線比較乾淨。`, `先讓這隊執行，後面再對紀錄。`]);
+  }
   if (hasKnownIssue && playerAllegiance(room, bot) === "good") {
-    return `我反對這隊，${teamNames} 裡有我不信任的人。`;
+    return pickLine([`我反對這隊，${teamNames} 裡有我不放心的位置。`, `這隊我不想放過，裡面有需要避開的人。`]);
   }
   if (playerAllegiance(room, bot) === "evil") {
-    return isCriticalMoment(room) ? `這隊在關鍵局風險太高，我想再換一組。` : `我先反對，這隊資訊還不夠乾淨。`;
+    return isCriticalMoment(room)
+      ? pickLine([`這隊在關鍵局風險太高，我想再換一組。`, `這回合我會保守一點，先反對。`, `這隊過了不好回頭，我先擋一下。`])
+      : pickLine([`我先反對，這隊資訊還不夠乾淨。`, `我想看隊長換另一種組合。`, `這組我暫時不買單。`]);
   }
   if (room.game.failedVoteCount >= 3) {
-    return `否決快到危險線，但這隊我還是不放心。`;
+    return pickLine([`否決快到危險線，但這隊我還是不放心。`, `再否決有壓力，可是這組我覺得更危險。`]);
   }
-  return `我反對這隊，想看隊長換更乾淨的組合。`;
+  return pickLine([`我反對這隊，想看隊長換更乾淨的組合。`, `這組資訊不夠穩，我先投反對。`, `我會先壓一票反對，看看下一組。`]);
+}
+
+function botProposeTeamOpinion(room: RoomInternal, bot: PlayerInternal, teamIds: string[]): string {
+  const teamNames = teamIds.map((id) => room.players.get(id)?.name || "未知").join("、");
+  if (playerAllegiance(room, bot) === "evil") {
+    return pickLine([`我先派 ${teamNames}，讓這輪有資訊。`, `這組可以測一下場上的反應。`, `先用這隊推進，後面再看票型。`]);
+  }
+  return pickLine([`我先派 ${teamNames}，這組目前比較穩。`, `這隊的紀錄相對乾淨，先試。`, `我想用這組確認任務結果。`]);
+}
+
+function botExcaliburOpinion(room: RoomInternal, targetId: string | null): string {
+  const targetName = targetId ? room.players.get(targetId)?.name || "一名隊員" : "";
+  if (targetId) {
+    return pickLine([
+      `我想換掉 ${targetName} 的任務卡，看看結果會不會更合理。`,
+      `王者之劍我會指向 ${targetName}，這樣資訊比較有價值。`,
+      `我選擇動 ${targetName}，這張卡值得確認。`
+    ]);
+  }
+  return pickLine([`我先不動王者之劍，保留原本任務卡。`, `這次不用劍，讓結果照原樣公開。`, `我不更換任務卡，避免把資訊洗亂。`]);
+}
+
+function botLadyOpinion(room: RoomInternal, target: PlayerInternal, announcement: Allegiance): string {
+  const claim = announcement === "good" ? "好人" : "可疑";
+  if (playerAllegiance(room, target) === announcement) {
+    return pickLine([`我查看 ${target.name}，我的公開說法是${claim}。`, `${target.name} 的結果我會宣告成${claim}。`, `這次女神我會說 ${target.name} 是${claim}。`]);
+  }
+  return pickLine([`我查看 ${target.name}，我的公開說法是${claim}。`, `我會把 ${target.name} 先放在${claim}那邊。`, `女神這次我宣告 ${target.name} 是${claim}。`]);
+}
+
+function botAssassinationOpinion(room: RoomInternal, targetId: string): string {
+  const targetName = room.players.get(targetId)?.name || "這名玩家";
+  return pickLine([`我最後會投 ${targetName}。`, `我偏向猜 ${targetName}。`, `從票型和任務看，我會選 ${targetName}。`, `我的刺殺票會給 ${targetName}。`]);
 }
 
 function chooseBotMissionVote(room: RoomInternal, bot: PlayerInternal): boolean {
@@ -1346,20 +1403,38 @@ function chooseBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): stri
 
 function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): string {
   const candidates = orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "good");
+  const hiddenMerlinLikePool = limitedAssassinationMerlinLikePool(room);
   const scored = candidates.map((player, index) => {
     let score = 0;
     score += assassinationReadScore(room, player);
-    score += (Math.random() - 0.5) * 1.4;
-    if (player.role === "merlin") {
-      score += 0.65;
-    }
-    if (player.role && playerAllegiance(room, player) === "evil") {
-      score -= bot.role === "oberon" ? 0.4 : 3.2;
+    score += (Math.random() - 0.5) * 1.25;
+    if (hiddenMerlinLikePool.size > 0) {
+      score += hiddenMerlinLikePool.has(player.id) ? 0.22 : -0.18;
     }
     return { player, score, index };
   });
   scored.sort((first, second) => second.score - first.score || first.index - second.index);
   return scored[0].player.id;
+}
+
+function limitedAssassinationMerlinLikePool(room: RoomInternal): Set<string> {
+  const goodPlayers = orderedPlayers(room).filter((player) => player.role && playerAllegiance(room, player) === "good");
+  if (goodPlayers.length < 4) {
+    return new Set();
+  }
+
+  const targetSize = Math.max(2, goodPlayers.length - 1);
+  const pool: string[] = [];
+  const add = (player?: PlayerInternal) => {
+    if (player && !pool.includes(player.id) && pool.length < targetSize) {
+      pool.push(player.id);
+    }
+  };
+
+  add(goodPlayers.find((player) => player.role === "merlin"));
+  add(goodPlayers.find((player) => player.role === "percival"));
+  goodPlayers.filter((player) => player.role !== "merlin" && player.role !== "percival").forEach(add);
+  return new Set(pool);
 }
 
 function chooseBotLadyTarget(room: RoomInternal, bot: PlayerInternal): string {
@@ -1394,6 +1469,16 @@ function chooseBotLadyAnnouncement(
 type ApiTeamChoice = {
   teamIds: string[];
   excaliburHolderId: string | null;
+  message: string | null;
+};
+
+type ApiTargetChoice = {
+  targetId: string | null;
+  message: string | null;
+};
+
+type ApiLadyChoice = {
+  announcement: Allegiance;
   message: string | null;
 };
 
@@ -1446,18 +1531,18 @@ async function chooseApiBotTeamVote(room: RoomInternal, bot: PlayerInternal): Pr
   };
 }
 
-async function chooseApiBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): Promise<string | null | undefined> {
+async function chooseApiBotExcaliburTarget(room: RoomInternal, bot: PlayerInternal): Promise<ApiTargetChoice | null> {
   if (!shouldUseBotAi(room, bot)) {
-    return undefined;
+    return null;
   }
   const decision = await requestBotAiDecision(room, bot, "excalibur");
   if (decision?.targetId === null) {
-    return null;
+    return { targetId: null, message: sanitizeBotSpeech(decision.message) };
   }
   if (decision?.targetId && room.game.proposedTeam.includes(decision.targetId) && decision.targetId !== bot.id) {
-    return decision.targetId;
+    return { targetId: decision.targetId, message: sanitizeBotSpeech(decision.message) };
   }
-  return undefined;
+  return null;
 }
 
 async function chooseApiBotLadyAnnouncement(
@@ -1465,22 +1550,23 @@ async function chooseApiBotLadyAnnouncement(
   bot: PlayerInternal,
   target: PlayerInternal,
   actualAllegiance: Allegiance
-): Promise<Allegiance | null> {
+): Promise<ApiLadyChoice | null> {
   if (!shouldUseBotAi(room, bot)) {
     return null;
   }
   const decision = await requestBotAiDecision(room, bot, "lady", { ladyTargetId: target.id, actualAllegiance });
-  return normalizeAllegiance(decision?.announcement);
+  const announcement = normalizeAllegiance(decision?.announcement);
+  return announcement ? { announcement, message: sanitizeBotSpeech(decision?.message) } : null;
 }
 
-async function chooseApiBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): Promise<string | null> {
+async function chooseApiBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): Promise<ApiTargetChoice | null> {
   if (!shouldUseBotAi(room, bot)) {
     return null;
   }
   const decision = await requestBotAiDecision(room, bot, "assassination");
   const target = decision?.targetId ? room.players.get(decision.targetId) : null;
   if (target?.role && playerAllegiance(room, target) === "good") {
-    return target.id;
+    return { targetId: target.id, message: sanitizeBotSpeech(decision.message) };
   }
   return null;
 }
@@ -1511,7 +1597,7 @@ async function requestBotAiDecision(
           {
             role: "system",
             content:
-              "你是阿瓦隆桌遊中的電腦玩家。你只能使用自己角色合法知道的資訊，不要自爆陣營或說自己是 AI。請只回 JSON，不要 markdown。"
+              "你是阿瓦隆桌遊中的電腦玩家。你只能使用自己角色合法知道的資訊，不要自爆陣營或說自己是 AI。每次決策都給一句短 message。請只回 JSON，不要 markdown。"
           },
           {
             role: "user",
@@ -1568,7 +1654,7 @@ function buildBotAiPromptState(
       targetId: "string 或 null，可用於 excalibur/assassination",
       excaliburHolderId: "string 或 null，可用於 propose-team",
       announcement: "good 或 evil，可用於 lady",
-      message: "短句，不能提到邪惡方、好人方策略、API、AI、真實角色或自己陣營"
+      message: "必填短句，像真人桌遊一句意見；不能提到邪惡方、好人方策略、API、AI、真實角色或自己陣營"
     },
     self: {
       id: bot.id,
@@ -1763,6 +1849,10 @@ function isCriticalMoment(room: RoomInternal): boolean {
 
 function chance(probability: number): boolean {
   return Math.random() < Math.max(0, Math.min(1, probability));
+}
+
+function pickLine(lines: string[]): string {
+  return lines[Math.floor(Math.random() * lines.length)] || "";
 }
 
 function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {

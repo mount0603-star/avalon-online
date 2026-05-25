@@ -1383,6 +1383,10 @@ select {
   border-left-color: rgba(76, 167, 165, 0.28);
 }
 
+.inline-lady-action {
+  border-left-color: rgba(76, 167, 165, 0.34);
+}
+
 .inline-action-summary {
   display: grid;
   gap: 3px;
@@ -1419,6 +1423,24 @@ select {
 .inline-action-buttons .primary-button,
 .inline-action-buttons .danger-button {
   min-height: 48px;
+}
+
+.inline-lady-candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 8px;
+  max-height: 164px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.inline-lady-candidates .select-player {
+  min-height: 42px;
+}
+
+.inline-wide-button {
+  width: 100%;
+  min-height: 46px;
 }
 
 .knowledge-line {
@@ -1858,8 +1880,35 @@ select {
   padding: 9px 10px;
 }
 
-.bot-opinion-row strong {
+.bot-opinion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bot-opinion-head strong {
   color: var(--gold);
+}
+
+.opinion-source {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
+.source-api {
+  border: 1px solid rgba(141, 225, 223, 0.42);
+  background: rgba(76, 167, 165, 0.2);
+  color: #9be4d9;
+}
+
+.source-rules {
+  border: 1px solid rgba(213, 168, 59, 0.34);
+  background: rgba(213, 168, 59, 0.15);
+  color: #f0d99c;
 }
 
 .bot-opinion-row span {

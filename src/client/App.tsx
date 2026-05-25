@@ -871,7 +871,9 @@ function BotAiSettings({ room }: { room: RoomView }) {
           />
         </label>
         <p className="bot-ai-note">
-          {room.botAiSetting.apiKeyConfigured ? "Key 已存在伺服器記憶體，不會回傳到玩家畫面。" : "未填 Key 時會維持本機規則 AI。"}
+          {room.botAiSetting.apiKeyConfigured
+            ? "Key 已存在伺服器記憶體；電腦意見旁會標示 API 或規則，API 失敗會退回規則 AI。"
+            : "未填 Key 時會維持本機規則 AI。"}
         </p>
         <button className="secondary-button full-button" type="button" onClick={saveSettings}>
           <Check size={17} />
@@ -1122,70 +1124,12 @@ function PhasePanel({
     return <ExcaliburPanel room={room} />;
   }
   if (room.game.phase === "lady") {
-    return <LadyOfLake room={room} />;
+    return null;
   }
   if (room.game.phase === "assassination") {
     return <Assassination room={room} />;
   }
   return <Finished room={room} />;
-}
-
-function LadyOfLake({ room }: { room: RoomView }) {
-  const youId = room.you?.id || "";
-  const isHolder = room.game.ladyHolderId === youId;
-  const candidates = room.players.filter((player) => player.id !== youId && !room.game.ladyUsedPlayerIds.includes(player.id));
-  const pending = room.ladyPendingResult;
-  const canChooseTarget = isHolder && !pending && candidates.length > 0;
-
-  return (
-    <div className="action-panel lake-panel">
-      <h2>湖中女神</h2>
-      <p>
-        持有者是 <strong>{playerName(room, room.game.ladyHolderId)}</strong>。先私下看真實陣營，再選擇要公開宣告什麼。
-      </p>
-      {pending ? (
-        <div className="lake-result-box">
-          <strong>{playerName(room, pending.targetId)} 真實是{pending.allegiance === "good" ? "好人" : "邪惡"}陣營</strong>
-          <span>選擇你要公開宣告的陣營。</span>
-          <div className="button-row">
-            <button className="primary-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "good")}>
-              <Check size={18} />
-              宣告好人
-            </button>
-            <button className="danger-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "evil")}>
-              <X size={18} />
-              宣告邪惡
-            </button>
-          </div>
-        </div>
-      ) : room.ladyResult ? (
-        <p className="lake-result-text">
-          你查看了 <strong>{playerName(room, room.ladyResult.targetId)}</strong>：
-          {room.ladyResult.allegiance === "good" ? "好人陣營" : "邪惡陣營"}
-        </p>
-      ) : null}
-      {canChooseTarget ? (
-        <div className="select-grid">
-          {candidates.map((player) => (
-            <button className="select-player" key={player.id} onClick={() => socket.emit("useLadyOfLake", player.id)}>
-              <Waves size={18} />
-              {player.name}
-            </button>
-          ))}
-        </div>
-      ) : isHolder && !pending ? (
-        <div className="button-row">
-          <p className="waiting-line">目前沒有可查看的目標，可以直接進入下一輪組隊。</p>
-          <button className="secondary-button" onClick={() => socket.emit("useLadyOfLake", "", null)}>
-            <RotateCcw size={18} />
-            繼續
-          </button>
-        </div>
-      ) : !pending ? (
-        <p className="waiting-line">等待持有者使用湖中女神。</p>
-      ) : null}
-    </div>
-  );
 }
 
 function LobbyPanel({ room }: { room: RoomView }) {
@@ -1496,10 +1440,7 @@ function BotOpinions({ room, embedded = false }: { room: RoomView; embedded?: bo
     return (
       <div className="history-list embedded-history">
         {room.game.botOpinions.slice(-4).map((opinion) => (
-          <div className="bot-opinion-row" key={opinion.id}>
-            <strong>{playerName(room, opinion.playerId)}</strong>
-            <span>{opinion.message}</span>
-          </div>
+          <BotOpinionRow opinion={opinion} room={room} key={opinion.id} />
         ))}
       </div>
     );
@@ -1516,13 +1457,23 @@ function BotOpinions({ room, embedded = false }: { room: RoomView; embedded?: bo
       </summary>
       <div className="history-list">
         {room.game.botOpinions.slice(-4).map((opinion) => (
-          <div className="bot-opinion-row" key={opinion.id}>
-            <strong>{playerName(room, opinion.playerId)}</strong>
-            <span>{opinion.message}</span>
-          </div>
+          <BotOpinionRow opinion={opinion} room={room} key={opinion.id} />
         ))}
       </div>
     </details>
+  );
+}
+
+function BotOpinionRow({ room, opinion }: { room: RoomView; opinion: RoomView["game"]["botOpinions"][number] }) {
+  const isApi = opinion.source === "api";
+  return (
+    <div className="bot-opinion-row">
+      <div className="bot-opinion-head">
+        <strong>{playerName(room, opinion.playerId)}</strong>
+        <small className={isApi ? "opinion-source source-api" : "opinion-source source-rules"}>{isApi ? "API" : "規則"}</small>
+      </div>
+      <span>{opinion.message}</span>
+    </div>
   );
 }
 
@@ -1620,9 +1571,13 @@ function InlineTurnAction({ room }: { room: RoomView }) {
   const youId = room.you?.id || "";
   const isVoting = room.game.phase === "team-vote";
   const isMission = room.game.phase === "mission";
+  const isLady = room.game.phase === "lady";
   const voted = room.game.teamVotesSubmitted.includes(youId);
   const onMission = room.game.proposedTeam.includes(youId);
   const missionSubmitted = room.game.missionVotesSubmitted.includes(youId);
+  if (isLady) {
+    return <InlineLadyAction room={room} />;
+  }
   if (!isVoting && !isMission) {
     return null;
   }
@@ -1679,6 +1634,60 @@ function InlineTurnAction({ room }: { room: RoomView }) {
             反對
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function InlineLadyAction({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const isHolder = room.game.ladyHolderId === youId;
+  const pending = room.ladyPendingResult;
+  const candidates = room.players.filter((player) => player.id !== youId && !room.game.ladyUsedPlayerIds.includes(player.id));
+  const canChooseTarget = isHolder && !pending && candidates.length > 0;
+
+  return (
+    <div className="inline-turn-action inline-lady-action">
+      <div className="inline-action-summary">
+        <strong>湖中女神</strong>
+        <span>持有者：{playerName(room, room.game.ladyHolderId)}</span>
+        <small>
+          {pending
+            ? `${playerName(room, pending.targetId)} 真實是${pending.allegiance === "good" ? "好人" : "邪惡"}`
+            : canChooseTarget
+              ? "選一名玩家查看"
+              : isHolder
+                ? "沒有可查看目標"
+                : "等待持有者"}
+        </small>
+      </div>
+      {pending ? (
+        <div className="inline-action-buttons">
+          <button className="primary-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "good")}>
+            <Check size={18} />
+            宣告好人
+          </button>
+          <button className="danger-button" onClick={() => socket.emit("useLadyOfLake", pending.targetId, "evil")}>
+            <X size={18} />
+            宣告邪惡
+          </button>
+        </div>
+      ) : canChooseTarget ? (
+        <div className="inline-lady-candidates">
+          {candidates.map((player) => (
+            <button className="select-player" key={player.id} onClick={() => socket.emit("useLadyOfLake", player.id)}>
+              <Waves size={17} />
+              {player.name}
+            </button>
+          ))}
+        </div>
+      ) : isHolder ? (
+        <button className="secondary-button inline-wide-button" onClick={() => socket.emit("useLadyOfLake", "", null)}>
+          <RotateCcw size={18} />
+          繼續
+        </button>
+      ) : (
+        <span className="inline-action-waiting">等待 {playerName(room, room.game.ladyHolderId)}</span>
       )}
     </div>
   );

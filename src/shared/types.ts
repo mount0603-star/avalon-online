@@ -75,6 +75,7 @@ export type BotOpinion = {
   playerId: string;
   phase: "team-vote" | "lady" | "assassination" | "excalibur";
   message: string;
+  source: "rules" | "api";
 };
 
 export type LadyInspectionPublic = {

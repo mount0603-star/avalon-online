@@ -406,6 +406,32 @@ test("assassination reveals evil players first but hides full roles until finish
   assert.equal(finalView.game.assassinId, assassinId);
 });
 
+test("bot assassination does not directly lock onto Merlin without public reads", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [percivalId, loyalId, merlinId, assassinId, morganaId] = room.game.playerOrder;
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(loyalId)!.role = "loyal";
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(assassinId)!.role = "assassin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.players.get(assassinId)!.isBot = true;
+  room.game.phase = "assassination";
+  room.game.assassinationVotes = {};
+
+  const originalRandom = Math.random;
+  Math.random = () => 0.5;
+  try {
+    runBotActions(room);
+  } finally {
+    Math.random = originalRandom;
+  }
+
+  assert.equal(room.game.assassinationVotes[assassinId], percivalId);
+  assert.equal(room.game.phase, "assassination");
+});
+
 test("leaving during a game lets a bot take over and promotes a human host", () => {
   const { room, playerId: hostId } = createRoom("A");
   const { playerId: nextHostId } = joinRoom(room.code, "B");
