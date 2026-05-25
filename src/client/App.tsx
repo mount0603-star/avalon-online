@@ -30,7 +30,16 @@ import {
   X
 } from "lucide-react";
 import { socket } from "./socket";
-import type { BotAiProvider, LadyHolderMode, LobbyRoomSummary, PlayerPublic, RoomJoinedPayload, RoomView, VoiceSignalPayload } from "../shared/types";
+import type {
+  AdminSnapshot,
+  BotAiProvider,
+  LadyHolderMode,
+  LobbyRoomSummary,
+  PlayerPublic,
+  RoomJoinedPayload,
+  RoomView,
+  VoiceSignalPayload
+} from "../shared/types";
 import councilHallUrl from "./assets/council-hall.png";
 import merlinCardUrl from "./assets/role-cards/merlin.png";
 import percivalCardUrl from "./assets/role-cards/percival.png";
@@ -179,6 +188,11 @@ export function App() {
   const [lobbyRooms, setLobbyRooms] = useState<LobbyRoomSummary[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [connected, setConnected] = useState(socket.connected);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminAuthenticated, setAdminAuthenticated] = useState(false);
+  const [adminSnapshot, setAdminSnapshot] = useState<AdminSnapshot>({ rooms: [], logs: [] });
+  const [adminRoom, setAdminRoom] = useState<RoomView | null>(null);
+  const [adminError, setAdminError] = useState("");
 
   useEffect(() => {
     const onState = (nextRoom: RoomView) => {
@@ -191,6 +205,11 @@ export function App() {
       clearRoomSession({ preserveRoomCode: message === "你已離開房間。" });
       setError(message);
     };
+    const onAdminRoomClosed = (message: string) => {
+      setAdminRoom(null);
+      setAdminOpen(true);
+      setAdminError(message);
+    };
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
 
@@ -198,6 +217,9 @@ export function App() {
     socket.on("lobbyRooms", setLobbyRooms);
     socket.on("roomError", onError);
     socket.on("roomClosed", onClosed);
+    socket.on("adminSnapshot", setAdminSnapshot);
+    socket.on("adminRoomState", setAdminRoom);
+    socket.on("adminRoomClosed", onAdminRoomClosed);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
 
@@ -206,6 +228,9 @@ export function App() {
       socket.off("lobbyRooms", setLobbyRooms);
       socket.off("roomError", onError);
       socket.off("roomClosed", onClosed);
+      socket.off("adminSnapshot", setAdminSnapshot);
+      socket.off("adminRoomState", setAdminRoom);
+      socket.off("adminRoomClosed", onAdminRoomClosed);
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
     };
@@ -346,6 +371,16 @@ export function App() {
     setError("");
   }
 
+  function leaveAdminRoom() {
+    socket.emit("adminLeaveSpectate");
+    setAdminRoom(null);
+    setAdminOpen(true);
+    setAdminError("");
+  }
+
+  const activeRoom = room || adminRoom;
+  const isAdminSpectating = Boolean(adminRoom && !room);
+
   return (
     <main
       className="app-shell"
@@ -361,15 +396,42 @@ export function App() {
           <h1>阿瓦隆線上版</h1>
         </div>
         <div className="connection-tools">
-          <div className={connected ? "connection online" : "connection offline"}>
+          <button
+            type="button"
+            className={connected ? "connection online" : "connection offline"}
+            onClick={() => setAdminOpen(true)}
+            title="管理者後台"
+          >
             {connected ? <Circle size={14} fill="currentColor" /> : <WifiOff size={16} />}
             {connected ? "已連線" : "離線"}
-          </div>
+          </button>
           {room ? <VoiceChatControl room={room} connected={connected} /> : null}
         </div>
       </section>
 
-      {!room ? (
+      {adminOpen ? (
+        <AdminPanel
+          connected={connected}
+          authenticated={adminAuthenticated}
+          snapshot={adminSnapshot}
+          error={adminError}
+          onClose={() => setAdminOpen(false)}
+          onAuthenticated={(snapshot) => {
+            setAdminAuthenticated(true);
+            setAdminSnapshot(snapshot);
+            setAdminError("");
+          }}
+          onSnapshot={setAdminSnapshot}
+          onError={setAdminError}
+          onSpectate={(state) => {
+            setAdminRoom(state);
+            setAdminOpen(false);
+            setAdminError("");
+          }}
+        />
+      ) : null}
+
+      {!activeRoom ? (
         <WelcomePanel
           name={name}
           roomCode={roomCode}
@@ -382,9 +444,189 @@ export function App() {
           lobbyRooms={lobbyRooms}
         />
       ) : (
-        <GameRoom room={room} error={error} onLeave={leaveCurrentRoom} />
+        <GameRoom room={activeRoom} error={error} onLeave={isAdminSpectating ? leaveAdminRoom : leaveCurrentRoom} adminMode={isAdminSpectating} />
       )}
     </main>
+  );
+}
+
+function AdminPanel({
+  connected,
+  authenticated,
+  snapshot,
+  error,
+  onClose,
+  onAuthenticated,
+  onSnapshot,
+  onError,
+  onSpectate
+}: {
+  connected: boolean;
+  authenticated: boolean;
+  snapshot: AdminSnapshot;
+  error: string;
+  onClose: () => void;
+  onAuthenticated: (snapshot: AdminSnapshot) => void;
+  onSnapshot: (snapshot: AdminSnapshot) => void;
+  onError: (message: string) => void;
+  onSpectate: (state: RoomView) => void;
+}) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!authenticated || !connected) {
+      return;
+    }
+    socket.emit("adminList", (payload) => {
+      if (payload.ok) {
+        onSnapshot(payload.snapshot);
+      } else {
+        onError(payload.error);
+      }
+    });
+  }, [authenticated, connected]);
+
+  function login() {
+    setBusy(true);
+    socket.emit("adminLogin", { username, password }, (payload) => {
+      setBusy(false);
+      if (!payload.ok) {
+        onError(payload.error);
+        return;
+      }
+      setPassword("");
+      onAuthenticated(payload.snapshot);
+    });
+  }
+
+  function refresh() {
+    socket.emit("adminList", (payload) => {
+      if (payload.ok) {
+        onSnapshot(payload.snapshot);
+        onError("");
+      } else {
+        onError(payload.error);
+      }
+    });
+  }
+
+  function closeRoom(roomCode: string) {
+    socket.emit("adminCloseRoom", roomCode, (payload) => {
+      if (payload.ok) {
+        onSnapshot(payload.snapshot);
+        onError("");
+      } else {
+        onError(payload.error);
+      }
+    });
+  }
+
+  function spectate(roomCode: string) {
+    socket.emit("adminSpectateRoom", roomCode, (payload) => {
+      if (payload.ok) {
+        onSnapshot(payload.snapshot);
+        onSpectate(payload.state);
+      } else {
+        onError(payload.error);
+      }
+    });
+  }
+
+  return (
+    <div className="admin-backdrop" role="dialog" aria-label="管理者後台">
+      <section className="admin-panel">
+        <div className="admin-head">
+          <div>
+            <span className="eyebrow">Admin</span>
+            <h2>管理者後台</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="關閉後台" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {!authenticated ? (
+          <div className="admin-login-grid">
+            <label>
+              帳號
+              <input value={username} autoComplete="username" onChange={(event) => setUsername(event.target.value)} />
+            </label>
+            <label>
+              密碼
+              <input
+                value={password}
+                type="password"
+                autoComplete="current-password"
+                onChange={(event) => setPassword(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    login();
+                  }
+                }}
+              />
+            </label>
+            {error ? <p className="error-line">{error}</p> : null}
+            <button type="button" className="primary-button" disabled={!connected || busy} onClick={login}>
+              <LogIn size={18} />
+              登入
+            </button>
+          </div>
+        ) : (
+          <div className="admin-dashboard">
+            <div className="admin-toolbar">
+              <strong>目前房間 {snapshot.rooms.length}</strong>
+              <button type="button" className="secondary-button compact-button" onClick={refresh}>
+                <RotateCcw size={16} />
+                重新整理
+              </button>
+            </div>
+            {error ? <p className="error-line">{error}</p> : null}
+            <div className="admin-room-list">
+              {snapshot.rooms.length === 0 ? <p className="muted-line">目前沒有房間。</p> : null}
+              {snapshot.rooms.map((room) => (
+                <div className="admin-room-row" key={room.roomCode}>
+                  <div>
+                    <strong>{room.roomCode}</strong>
+                    <span>
+                      {room.hostName} 的遊戲 · {phaseLabel[room.phase]} · {room.playerCount}/{room.maxPlayers}
+                    </span>
+                    <small>
+                      真人 {room.humanCount}、電腦 {room.botCount} · 閒置倒數 {formatDuration(room.idleTimeoutAt - Date.now())}
+                    </small>
+                  </div>
+                  <div className="admin-row-actions">
+                    <button type="button" className="secondary-button compact-button" onClick={() => spectate(room.roomCode)}>
+                      <Eye size={16} />
+                      旁觀
+                    </button>
+                    <button type="button" className="danger-button compact-button" onClick={() => closeRoom(room.roomCode)}>
+                      <Trash2 size={16} />
+                      刪除
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <details className="admin-log-panel" open>
+              <summary>後台 LOG</summary>
+              <div className="admin-log-list">
+                {snapshot.logs.length === 0 ? <p className="muted-line">尚無紀錄。</p> : null}
+                {snapshot.logs.slice(0, 30).map((log) => (
+                  <div className={`admin-log-row ${log.level}`} key={log.id}>
+                    <span>{new Date(log.at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                    <strong>{log.roomCode || "SYSTEM"}</strong>
+                    <em>{log.message}</em>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -685,7 +927,7 @@ function LobbyRoomList({ rooms }: { rooms: LobbyRoomSummary[] }) {
   );
 }
 
-function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onLeave: () => void }) {
+function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView; error: string; onLeave: () => void; adminMode?: boolean }) {
   const isHost = room.you?.isHost ?? false;
   const isLobby = room.game.phase === "lobby";
   const [teamDraft, setTeamDraft] = useState<string[]>([]);
@@ -800,6 +1042,12 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
           </div>
         </div>
         <div className="room-actions">
+          {adminMode ? (
+            <div className="phase-pill admin-watch-pill">
+              <Eye size={16} />
+              管理旁觀
+            </div>
+          ) : null}
           <IdleStatus room={room} />
           <div className="phase-pill">
             <Flag size={16} />
@@ -807,7 +1055,7 @@ function GameRoom({ room, error, onLeave }: { room: RoomView; error: string; onL
           </div>
           <button className="secondary-button compact-button" onClick={onLeave}>
             <LogOut size={17} />
-            離開房間
+            {adminMode ? "回到後台" : "離開房間"}
           </button>
         </div>
       </header>

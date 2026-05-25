@@ -145,6 +145,24 @@ export function normalizeName(name: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 18) : "玩家";
 }
 
+function nameKey(name: string): string {
+  return normalizeName(name).toLocaleLowerCase("zh-TW");
+}
+
+function assertHumanName(name: string): void {
+  if (/^電腦\d+$/i.test(normalizeName(name))) {
+    throw new Error("暱稱不能使用電腦編號，請換一個比較好辨識的名字。");
+  }
+}
+
+function assertNameAvailable(room: RoomInternal, name: string, exceptPlayerId?: string): void {
+  const key = nameKey(name);
+  const duplicated = Array.from(room.players.values()).find((player) => player.id !== exceptPlayerId && nameKey(player.name) === key);
+  if (duplicated) {
+    throw new Error("這個暱稱已經有人使用，請換一個名字。");
+  }
+}
+
 function nextBotName(room: RoomInternal): string {
   return `${BOT_NAME_PREFIX}${room.players.size + 1}`;
 }
@@ -162,16 +180,17 @@ function findRejoinablePlayerByName(room: RoomInternal, name: string): PlayerInt
   if (room.game.phase === "lobby") {
     return null;
   }
-  const normalized = normalizeName(name).toLocaleLowerCase("zh-TW");
-  return (
-    Array.from(room.players.values()).find(
-      (player) =>
-        player.name.toLocaleLowerCase("zh-TW") === normalized && (player.isBot || !player.connected || player.socketId === null)
-    ) || null
-  );
+  const normalized = nameKey(name);
+  const matches = Array.from(room.players.values()).filter((player) => nameKey(player.name) === normalized);
+  const rejoinablePlayers = matches.filter((player) => player.isBot || !player.connected || player.socketId === null);
+  if (rejoinablePlayers.length > 1) {
+    throw new Error("這個暱稱在房間內不唯一，無法判斷要接回哪個位置。請換名字或請房主重開。");
+  }
+  return rejoinablePlayers[0] || null;
 }
 
 export function createRoom(name: string, existingPlayerId?: string): { room: RoomInternal; playerId: string } {
+  assertHumanName(name);
   const code = generateRoomCode();
   const playerId = existingPlayerId || randomUUID();
   const now = Date.now();
@@ -208,8 +227,10 @@ export function joinRoom(roomCode: string, name: string, existingPlayerId?: stri
   }
 
   const normalizedName = normalizeName(name);
+  assertHumanName(normalizedName);
 
   if (existingPlayerId && room.players.has(existingPlayerId)) {
+    assertNameAvailable(room, normalizedName, existingPlayerId);
     const player = room.players.get(existingPlayerId)!;
     player.name = normalizedName;
     player.connected = true;
@@ -232,6 +253,8 @@ export function joinRoom(roomCode: string, name: string, existingPlayerId?: stri
   if (room.players.size >= MAX_PLAYERS) {
     throw new Error("房間已滿。");
   }
+
+  assertNameAvailable(room, normalizedName);
 
   const playerId = existingPlayerId || randomUUID();
   const player: PlayerInternal = {
@@ -854,6 +877,27 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
     ladyPendingResult: viewer ? visibleLadyPendingResult(room, viewer) : null,
     publicEvilPlayerIds,
     revealedRoles
+  };
+}
+
+export function buildAdminRoomView(room: RoomInternal): RoomView {
+  const view = buildRoomView(room, "__admin__");
+  return {
+    ...view,
+    you: null,
+    yourRole: null,
+    yourAllegiance: null,
+    roleKnowledge: [],
+    ladyResult: null,
+    ladyPendingResult: null,
+    publicEvilPlayerIds: orderedPlayers(room)
+      .filter((player) => player.role && playerAllegiance(room, player) === "evil")
+      .map((player) => player.id),
+    revealedRoles: Object.fromEntries(
+      orderedPlayers(room)
+        .filter((player) => player.role)
+        .map((player) => [player.id, player.role!])
+    )
   };
 }
 

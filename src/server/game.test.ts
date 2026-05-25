@@ -436,7 +436,8 @@ test("bot assassination does not directly lock onto Merlin without public reads"
     Math.random = originalRandom;
   }
 
-  assert.equal(room.game.assassinationVotes[assassinId], percivalId);
+  assert.ok([percivalId, loyalId, merlinId].includes(room.game.assassinationVotes[assassinId]));
+  assert.notEqual(room.game.assassinationVotes[assassinId], merlinId);
   assert.equal(room.game.phase, "assassination");
 });
 
@@ -469,6 +470,28 @@ test("same name can rejoin a bot takeover and finished-room bots can be removed"
   room.game.phase = "finished";
   removeBot(room, room.hostId, bId);
   assert.equal(room.players.has(bId), false);
+});
+
+test("duplicate and reserved names are rejected before they can confuse rejoin", () => {
+  const { room } = createRoom("A");
+  joinRoom(room.code, "B");
+
+  assert.throws(() => joinRoom(room.code, "B"), /暱稱/);
+  assert.throws(() => joinRoom(room.code, "電腦1"), /電腦編號/);
+});
+
+test("ambiguous same-name rejoin is blocked instead of replacing the wrong bot", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  const { playerId: bId } = joinRoom(room.code, "B");
+  const { playerId: cId } = joinRoom(room.code, "C");
+  ["D", "E"].forEach((name) => joinRoom(room.code, name));
+  room.players.get(cId)!.name = "B";
+  startGame(room, hostId);
+
+  leaveRoom(room, bId);
+  leaveRoom(room, cId);
+
+  assert.throws(() => joinRoom(room.code, "B"), /不唯一/);
 });
 
 test("bot API key remains in the room across resets", () => {

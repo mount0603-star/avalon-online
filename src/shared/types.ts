@@ -172,6 +172,27 @@ export type LobbyRoomSummary = {
   updatedAt: number;
 };
 
+export type AdminRoomSummary = LobbyRoomSummary & {
+  roomCode: string;
+  humanCount: number;
+  botCount: number;
+  createdAt: number;
+  idleTimeoutAt: number;
+};
+
+export type AdminLogEntry = {
+  id: number;
+  at: number;
+  level: "info" | "warning" | "error";
+  message: string;
+  roomCode?: string;
+};
+
+export type AdminSnapshot = {
+  rooms: AdminRoomSummary[];
+  logs: AdminLogEntry[];
+};
+
 export type VoiceSignalPayload =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
@@ -198,6 +219,17 @@ export type ClientToServerEvents = {
   voiceJoin: () => void;
   voiceLeave: () => void;
   voiceSignal: (targetPlayerId: string, signal: VoiceSignalPayload) => void;
+  adminLogin: (
+    payload: { username: string; password: string },
+    ack: (payload: { ok: true; snapshot: AdminSnapshot } | { ok: false; error: string }) => void
+  ) => void;
+  adminList: (ack: (payload: { ok: true; snapshot: AdminSnapshot } | { ok: false; error: string }) => void) => void;
+  adminCloseRoom: (roomCode: string, ack: (payload: { ok: true; snapshot: AdminSnapshot } | { ok: false; error: string }) => void) => void;
+  adminSpectateRoom: (
+    roomCode: string,
+    ack: (payload: { ok: true; state: RoomView; snapshot: AdminSnapshot } | { ok: false; error: string }) => void
+  ) => void;
+  adminLeaveSpectate: () => void;
   resetRoom: () => void;
   leaveRoom: () => void;
 };
@@ -211,6 +243,9 @@ export type ServerToClientEvents = {
   voicePeerJoined: (playerId: string) => void;
   voicePeerLeft: (playerId: string) => void;
   voiceSignal: (fromPlayerId: string, signal: VoiceSignalPayload) => void;
+  adminSnapshot: (snapshot: AdminSnapshot) => void;
+  adminRoomState: (state: RoomView) => void;
+  adminRoomClosed: (message: string) => void;
 };
 
 export type InterServerEvents = Record<string, never>;
@@ -219,4 +254,6 @@ export type SocketData = {
   roomCode?: string;
   playerId?: string;
   voiceEnabled?: boolean;
+  adminAuthenticated?: boolean;
+  adminSpectatingRoomCode?: string;
 };
