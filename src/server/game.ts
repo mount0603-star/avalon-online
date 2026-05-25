@@ -95,7 +95,7 @@ const DEFAULT_BOT_AI_CONFIG: BotAiInternalConfig = {
   apiKey: "",
   apiKeyConfigured: false
 };
-const BOT_AI_TIMEOUT_MS = 6500;
+const BOT_AI_TIMEOUT_MS = 3500;
 const BOT_NAME_PREFIX = "電腦";
 
 export function emptyGame(): GameInternal {
@@ -1662,7 +1662,7 @@ async function requestBotAiDecision(
           {
             role: "system",
             content:
-              "你是阿瓦隆桌遊中的電腦玩家。你只能使用自己角色合法知道的資訊，不要自爆陣營或說自己是 AI。每次決策都給一句短 message。請只回 JSON，不要 markdown。"
+              "你是阿瓦隆電腦玩家。只用已提供資訊，別自爆角色/陣營/AI。快速決策，只回短 JSON，message 16 字內。"
           },
           {
             role: "user",
@@ -1705,52 +1705,39 @@ function buildBotAiPromptState(
   }
 
   return {
-    task,
-    instruction: {
-      "propose-team": `選出 teamIds，長度必須是 ${currentTeamSize(room)}。若王者之劍啟用，excaliburHolderId 必須是隊伍中非隊長玩家。`,
-      "team-vote": "判斷是否 approve 目前隊伍，必要時給一句中性理由 message。",
-      excalibur: "可選 targetId 更換一名其他任務隊員的任務卡，或 targetId:null 表示不用。",
-      lady: "選擇公開宣告 announcement: good 或 evil。可以依照你的陣營選擇是否說實話。",
-      assassination: "選 targetId 猜梅林。"
+    t: task,
+    need: {
+      "propose-team": `teamIds 長度 ${currentTeamSize(room)}；王者之劍啟用時 excaliburHolderId 要在隊伍內且不是隊長。`,
+      "team-vote": "回 approve 和短理由。",
+      excalibur: "回 targetId 或 null。",
+      lady: "回 announcement: good/evil，可說謊。",
+      assassination: "回 targetId。"
     }[task],
-    responseShape: {
-      approve: "boolean，可用於 team-vote",
-      teamIds: "string[]，可用於 propose-team",
-      targetId: "string 或 null，可用於 excalibur/assassination",
-      excaliburHolderId: "string 或 null，可用於 propose-team",
-      announcement: "good 或 evil，可用於 lady",
-      message: "必填短句，像真人桌遊一句意見；不能提到邪惡方、好人方策略、API、AI、真實角色或自己陣營"
-    },
+    out: "JSON only: approve?, teamIds?, targetId?, excaliburHolderId?, announcement?, message(16字內)",
     self: {
       id: bot.id,
       name: bot.name,
       role: bot.role,
-      roleName: bot.role ? ROLE_DEFINITIONS[bot.role].name : null,
-      currentAllegiance: playerAllegiance(room, bot)
+      side: playerAllegiance(room, bot)
     },
-    game: {
+    g: {
       phase: room.game.phase,
-      questIndex: room.game.questIndex + 1,
+      q: room.game.questIndex + 1,
       teamSize: currentTeamSize(room),
-      failThreshold: currentFailThreshold(room),
-      failedVoteCount: room.game.failedVoteCount,
-      proposedTeam: room.game.proposedTeam,
-      missionResults: room.game.quests.map((quest) => ({
-        index: quest.index + 1,
-        team: quest.team,
-        success: quest.success,
-        failCount: quest.failCount
-      })),
-      voteHistory: room.game.voteHistory.slice(-5)
+      failNeed: currentFailThreshold(room),
+      rejects: room.game.failedVoteCount,
+      team: room.game.proposedTeam,
+      quests: room.game.quests.slice(-3).map((quest) => [quest.index + 1, quest.success ? "S" : "F", quest.failCount, quest.team]),
+      votes: room.game.voteHistory.slice(-3).map((vote) => [vote.approved ? "Y" : "N", vote.leaderId, vote.team, vote.approvals, vote.rejections])
     },
-    players: orderedPlayers(room).map((player, index) => ({
+    p: orderedPlayers(room).map((player, index) => ({
       id: player.id,
       name: player.name,
-      order: index + 1,
-      isSelf: player.id === bot.id,
-      isLeader: currentLeaderId(room) === player.id,
-      isOnProposedTeam: room.game.proposedTeam.includes(player.id),
-      knownInfo: knownMap.get(player.id) || []
+      n: index + 1,
+      self: player.id === bot.id,
+      leader: currentLeaderId(room) === player.id,
+      onTeam: room.game.proposedTeam.includes(player.id),
+      known: knownMap.get(player.id) || []
     })),
     extra
   };

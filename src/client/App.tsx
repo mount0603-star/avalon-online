@@ -8,6 +8,7 @@ import {
   Crown,
   Eye,
   Flag,
+  Hand,
   Hourglass,
   Link as LinkIcon,
   LogIn,
@@ -21,6 +22,7 @@ import {
   Sparkles,
   Swords,
   Target,
+  ThumbsUp,
   Trash2,
   Users,
   Vote,
@@ -41,6 +43,7 @@ import type {
   VoiceSignalPayload
 } from "../shared/types";
 import councilHallUrl from "./assets/council-hall.png";
+import titleLogoUrl from "./assets/title-logo.png";
 import merlinCardUrl from "./assets/role-cards/merlin.png";
 import percivalCardUrl from "./assets/role-cards/percival.png";
 import loyalCardUrl from "./assets/role-cards/loyal.png";
@@ -393,7 +396,10 @@ export function App() {
       <section className="hero-band">
         <div>
           <p className="eyebrow">bevis與他的朋友私人遊戲 不公開</p>
-          <h1>阿瓦隆線上版</h1>
+          <h1 className="hero-title">
+            <img src={titleLogoUrl} alt="Assassinate Merlin" />
+            <span className="sr-only">Assassinate Merlin</span>
+          </h1>
         </div>
         <div className="connection-tools">
           <button
@@ -935,6 +941,10 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
   const lastTeamDraftClickRef = useRef<{ playerId: string; at: number } | null>(null);
   const localTeamDraftUntilRef = useRef(0);
   const isTeamDrafting = room.game.phase === "team-building" && room.you?.id === room.game.leaderId;
+  const isLadyTargeting =
+    room.game.phase === "lady" &&
+    room.you?.id === room.game.ladyHolderId &&
+    !room.ladyPendingResult;
   const excaliburCandidates = teamDraft.filter((id) => id !== room.game.leaderId);
 
   function markLocalTeamDraftChange() {
@@ -1011,6 +1021,13 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
     });
   }
 
+  function chooseLadyTarget(playerId: string) {
+    if (!isLadyTargeting || playerId === room.you?.id || room.game.ladyUsedPlayerIds.includes(playerId)) {
+      return;
+    }
+    socket.emit("useLadyOfLake", playerId);
+  }
+
   useEffect(() => {
     if (!isTeamDrafting) {
       return;
@@ -1064,7 +1081,12 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
 
       <div className={isLobby ? "game-grid lobby-game-grid" : "game-grid active-game-grid"}>
         <aside className="side-panel">
-          <PlayerList room={room} teamDraft={teamDraft} onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined} />
+          <PlayerList
+            room={room}
+            teamDraft={teamDraft}
+            onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined}
+            onUseLady={isLadyTargeting ? chooseLadyTarget : undefined}
+          />
           <HostControls room={room} />
         </aside>
 
@@ -1126,11 +1148,13 @@ function IdleStatus({ room }: { room: RoomView }) {
 function PlayerList({
   room,
   teamDraft,
-  onToggleTeamDraft
+  onToggleTeamDraft,
+  onUseLady
 }: {
   room: RoomView;
   teamDraft?: string[];
   onToggleTeamDraft?: (playerId: string) => void;
+  onUseLady?: (playerId: string) => void;
 }) {
   const leaderId = room.game.leaderId;
   const canRemoveBots = room.you?.isHost && (room.game.phase === "lobby" || room.game.phase === "finished");
@@ -1153,25 +1177,42 @@ function PlayerList({
           const isPendingMissionVote =
             room.game.phase === "mission" && room.game.proposedTeam.includes(player.id) && !room.game.missionVotesSubmitted.includes(player.id);
           const orderIndex = seatOrderIndex(room, player.id);
-          const cardClass = playerSeatClass(room, player, isDraftMember, Boolean(onToggleTeamDraft));
+          const isLadyCandidate =
+            Boolean(onUseLady) && player.id !== room.you?.id && !room.game.ladyUsedPlayerIds.includes(player.id);
+          const isSelectable = Boolean(onToggleTeamDraft) || isLadyCandidate;
+          const cardClass = playerSeatClass(room, player, isDraftMember, isSelectable);
           const cardStyle = visibleRole ? roleCardStyle(visibleRole, roleVariantIndexForPlayer(room, player.id, visibleRole)) : undefined;
           const pendingLabel = isPendingTeamVote ? "尚未表決" : isPendingMissionVote ? "尚未送出任務" : null;
+          const cardTitle = onToggleTeamDraft
+            ? "點卡片選入或移出任務隊伍"
+            : isLadyCandidate
+              ? "點卡片使用湖中女神"
+              : undefined;
+          const activateCard = () => {
+            if (onToggleTeamDraft) {
+              onToggleTeamDraft(player.id);
+              return;
+            }
+            if (isLadyCandidate) {
+              onUseLady?.(player.id);
+            }
+          };
           return (
             <div
               className={cardClass}
               key={player.id}
               style={cardStyle}
-              role={onToggleTeamDraft ? "button" : undefined}
-              tabIndex={onToggleTeamDraft ? 0 : undefined}
+              role={isSelectable ? "button" : undefined}
+              tabIndex={isSelectable ? 0 : undefined}
               aria-pressed={onToggleTeamDraft ? isDraftMember : undefined}
-              title={onToggleTeamDraft ? "點卡片選入或移出任務隊伍" : undefined}
-              onClick={() => onToggleTeamDraft?.(player.id)}
+              title={cardTitle}
+              onClick={isSelectable ? activateCard : undefined}
               onKeyDown={(event) => {
-                if (!onToggleTeamDraft || (event.key !== "Enter" && event.key !== " ")) {
+                if (!isSelectable || (event.key !== "Enter" && event.key !== " ")) {
                   return;
                 }
                 event.preventDefault();
-                onToggleTeamDraft(player.id);
+                activateCard();
               }}
             >
               <div className="seat-corner-marks">
@@ -2186,13 +2227,13 @@ function InlineTurnAction({
       {voted ? (
         <span className="inline-action-waiting">已投票</span>
       ) : (
-        <div className="inline-action-buttons">
-          <button className="primary-button" onClick={() => socket.emit("castTeamVote", true)}>
-            <Check size={18} />
+        <div className="inline-action-buttons team-vote-buttons">
+          <button className="team-approve-button" onClick={() => socket.emit("castTeamVote", true)}>
+            <ThumbsUp size={18} />
             贊成
           </button>
-          <button className="danger-button" onClick={() => socket.emit("castTeamVote", false)}>
-            <X size={18} />
+          <button className="team-reject-button" onClick={() => socket.emit("castTeamVote", false)}>
+            <Hand size={18} />
             反對
           </button>
         </div>

@@ -100,9 +100,26 @@ button:disabled {
 
 .hero-band h1 {
   margin: 3px 0 0;
-  font-size: clamp(2rem, 4vw, 4rem);
-  line-height: 0.94;
-  letter-spacing: 0;
+  line-height: 1;
+}
+
+.hero-title img {
+  display: block;
+  width: min(680px, 52vw);
+  max-width: 100%;
+  height: auto;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.58)) drop-shadow(0 0 12px rgba(213, 168, 59, 0.2));
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .eyebrow {
@@ -501,6 +518,8 @@ select {
 .primary-button,
 .secondary-button,
 .danger-button,
+.team-approve-button,
+.team-reject-button,
 .icon-button,
 .select-player {
   display: inline-flex;
@@ -535,6 +554,20 @@ select {
   background: linear-gradient(180deg, var(--red), var(--red-dark));
   color: #fff2ee;
   padding: 0 16px;
+}
+
+.team-approve-button {
+  background: linear-gradient(180deg, #2775bd, #18518d);
+  color: #f1f8ff;
+  padding: 0 16px;
+  box-shadow: inset 0 0 0 1px rgba(190, 225, 255, 0.16);
+}
+
+.team-reject-button {
+  background: linear-gradient(180deg, #8b2940, #5f1b2b);
+  color: #fff0f3;
+  padding: 0 16px;
+  box-shadow: inset 0 0 0 1px rgba(255, 205, 220, 0.15);
 }
 
 .full-button {
@@ -1645,7 +1678,9 @@ select {
 }
 
 .inline-action-buttons .primary-button,
-.inline-action-buttons .danger-button {
+.inline-action-buttons .danger-button,
+.inline-action-buttons .team-approve-button,
+.inline-action-buttons .team-reject-button {
   min-height: 48px;
 }
 
@@ -2314,6 +2349,10 @@ select {
 }
 
 @media (max-width: 1080px) {
+  .hero-title img {
+    width: min(620px, 74vw);
+  }
+
   .welcome-grid {
     grid-template-columns: minmax(280px, 420px) minmax(280px, 1fr);
   }
@@ -2344,6 +2383,10 @@ select {
 }
 
 @media (max-width: 760px) {
+  .hero-title img {
+    width: min(100%, 430px);
+  }
+
   .app-shell {
     width: min(100% - 20px, 720px);
     padding-top: 14px;
