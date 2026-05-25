@@ -73,7 +73,7 @@ export type RoleKnowledge = {
 export type BotOpinion = {
   id: number;
   playerId: string;
-  phase: "team-vote" | "lady" | "assassination" | "excalibur";
+  phase: "team-building" | "team-vote" | "mission" | "lady" | "assassination" | "excalibur";
   message: string;
   source: "rules" | "api";
 };

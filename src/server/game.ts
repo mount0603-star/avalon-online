@@ -635,6 +635,7 @@ function resolveMission(room: RoomInternal): void {
     excaliburHolderId: room.game.excaliburEnabled ? room.game.excaliburHolderId : null,
     excaliburTargetId: room.game.excaliburEnabled ? room.game.excaliburTargetId : null
   });
+  addMissionResultBotOpinions(room, room.game.quests[room.game.quests.length - 1]);
 
   maybeDrawLancelotCard(room, room.game.questIndex);
   room.game.missionVotes = {};
@@ -985,16 +986,136 @@ function addBotOpinion(
   message: string,
   source: BotOpinion["source"] = "rules"
 ): void {
+  const cleaned = message.trim();
+  if (!cleaned || isBotOpinionBurstFull(room, phase)) {
+    return;
+  }
   room.game.botOpinions.push({
     id: room.game.botOpinions.length + 1,
     playerId: player.id,
     phase,
-    message,
+    message: cleaned,
     source
   });
   if (room.game.botOpinions.length > 12) {
     room.game.botOpinions = room.game.botOpinions.slice(-12);
   }
+}
+
+function isBotOpinionBurstFull(room: RoomInternal, phase: BotOpinion["phase"]): boolean {
+  const limit: Record<BotOpinion["phase"], number> = {
+    "team-building": 1,
+    "team-vote": 2,
+    mission: 2,
+    lady: 1,
+    assassination: 3,
+    excalibur: 1
+  };
+  let recentSamePhase = 0;
+  for (let index = room.game.botOpinions.length - 1; index >= 0; index -= 1) {
+    if (room.game.botOpinions[index].phase !== phase) {
+      break;
+    }
+    recentSamePhase += 1;
+  }
+  return recentSamePhase >= limit[phase];
+}
+
+function shouldShareBotTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve: boolean): boolean {
+  const team = room.game.proposedTeam.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
+  const knownEvil = knownEvilIds(room, bot);
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+  const hasPrivateRead = team.some((player) => privateGood.has(player.id) || privateEvil.has(player.id));
+  const hasKnownIssue = team.some((player) => knownEvil.has(player.id) || privateEvil.has(player.id));
+  const hasSuspiciousIssue = team.some((player) => player.id !== bot.id && botSuspicionScore(room, bot, player) >= 1);
+  const protectingKeyLine = bot.role === "percival" && Boolean(deducedMerlinIdForPercival(room, bot));
+  const critical = isCriticalMoment(room);
+
+  if (!approve) {
+    if (hasPrivateRead || hasKnownIssue || protectingKeyLine) {
+      return chance(0.82);
+    }
+    return chance(critical || hasSuspiciousIssue ? 0.68 : 0.48);
+  }
+  if (hasPrivateRead || protectingKeyLine || hasKnownIssue) {
+    return chance(0.66);
+  }
+  if (critical && hasSuspiciousIssue) {
+    return chance(0.42);
+  }
+  return chance(0.2);
+}
+
+function addMissionResultBotOpinions(room: RoomInternal, quest: QuestResult): void {
+  const candidates = orderedPlayers(room).filter((player) => player.isBot);
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const speakers = [...candidates]
+    .sort((first, second) => botMissionCommentPriority(room, second, quest) - botMissionCommentPriority(room, first, quest))
+    .slice(0, !quest.success && (quest.failCount >= 2 || isCriticalMoment(room)) && chance(0.38) ? 2 : 1);
+
+  for (const speaker of speakers) {
+    if (!quest.success || (isCriticalMoment(room) && chance(0.46)) || chance(0.22)) {
+      addBotOpinion(room, speaker, "mission", botMissionResultOpinion(room, speaker, quest));
+    }
+  }
+}
+
+function botMissionCommentPriority(room: RoomInternal, bot: PlayerInternal, quest: QuestResult): number {
+  const team = quest.team.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+  let score = quest.success ? 0.6 : 1.4;
+  if (team.some((player) => player.id === bot.id)) {
+    score += 0.45;
+  }
+  if (team.some((player) => privateGood.has(player.id) || privateEvil.has(player.id))) {
+    score += 1.2;
+  }
+  if (bot.role === "merlin" || bot.role === "percival") {
+    score += 0.55;
+  }
+  return score + Math.random() * 0.4;
+}
+
+function botMissionResultOpinion(room: RoomInternal, bot: PlayerInternal, quest: QuestResult): string {
+  const teamNames = quest.team.map((id) => room.players.get(id)?.name || "未知").join("、");
+  const trustedNames = quest.team
+    .filter((id) => privateLadyGoodIds(room, bot).has(id) || id === deducedMerlinIdForPercival(room, bot))
+    .map((id) => room.players.get(id)?.name || "未知")
+    .join("、");
+  const isGoodPerspective = !bot.role || playerAllegiance(room, bot) === "good";
+  const flaggedNames = quest.team
+    .filter((id) => {
+      const player = room.players.get(id);
+      if (!player) {
+        return false;
+      }
+      if (isGoodPerspective) {
+        return privateLadyEvilIds(room, bot).has(id) || knownEvilIds(room, bot).has(id);
+      }
+      return player.id !== bot.id && (!player.role || playerAllegiance(room, player) === "good");
+    })
+    .map((id) => room.players.get(id)?.name || "未知")
+    .join("、");
+
+  if (quest.success) {
+    if (trustedNames) {
+      return pickLine([`這次成功，我會先保留 ${trustedNames} 這條線。`, `${trustedNames} 這條線目前可以加分。`, `這輪成功後，${trustedNames} 我會先放前面。`]);
+    }
+    return pickLine([`這次成功，${teamNames} 先加一點分。`, `成功局先記下來，後面對票型。`, `這隊過了，暫時不要急著拆。`]);
+  }
+
+  if (flaggedNames) {
+    return pickLine([`任務失敗，我會優先盯 ${flaggedNames}。`, `${flaggedNames} 這條線要先避開。`, `這次失敗後，${flaggedNames} 不能輕放。`]);
+  }
+  if (quest.failCount >= 2) {
+    return pickLine([`兩張失敗，這隊不只一個位置有問題。`, `這輪炸得太重，隊伍要整組重看。`, `兩張失敗代表這條線很髒。`]);
+  }
+  return pickLine([`任務失敗，這隊裡至少要挑一個出來。`, `這次失敗先從隊伍交集看。`, `失敗局先別急，下一隊要避開重複風險。`]);
 }
 
 function maybeDrawLancelotCard(room: RoomInternal, completedQuestIndex: number): void {
@@ -1062,6 +1183,7 @@ function runOneBotAction(room: RoomInternal): boolean {
     if (leader?.isBot) {
       const team = chooseBotTeam(room, leader);
       proposeTeam(room, leader.id, team, room.game.excaliburEnabled ? chooseBotExcaliburHolder(room, leader, team) : null);
+      addBotOpinion(room, leader, "team-building", botProposeTeamOpinion(room, leader, team));
       return true;
     }
   }
@@ -1071,8 +1193,9 @@ function runOneBotAction(room: RoomInternal): boolean {
     if (bot) {
       const approve = chooseBotTeamVote(room, bot);
       const opinion = botTeamVoteOpinion(room, bot, approve);
+      const shouldShare = shouldShareBotTeamVoteOpinion(room, bot, approve);
       castTeamVote(room, bot.id, approve);
-      if (!approve || chance(0.28)) {
+      if (shouldShare) {
         addBotOpinion(room, bot, "team-vote", opinion);
       }
       return true;
@@ -1142,9 +1265,7 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
       const excaliburHolderId =
         room.game.excaliburEnabled ? apiTeam?.excaliburHolderId || chooseBotExcaliburHolder(room, leader, team) : null;
       proposeTeam(room, leader.id, team, excaliburHolderId);
-      if (apiTeam?.message || apiTeam || chance(0.22)) {
-        addBotOpinion(room, leader, "team-vote", apiTeam?.message || botProposeTeamOpinion(room, leader, team), apiTeam ? "api" : "rules");
-      }
+      addBotOpinion(room, leader, "team-building", apiTeam?.message || botProposeTeamOpinion(room, leader, team), apiTeam ? "api" : "rules");
       return true;
     }
   }
@@ -1158,8 +1279,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
         approve = true;
       }
       const opinion = apiVote?.message || botTeamVoteOpinion(room, bot, approve);
+      const shouldShare = shouldShareBotTeamVoteOpinion(room, bot, approve);
       castTeamVote(room, bot.id, approve);
-      if (apiVote || !approve || chance(0.28)) {
+      if (apiVote || shouldShare) {
         addBotOpinion(room, bot, "team-vote", opinion, apiVote ? "api" : "rules");
       }
       return true;
@@ -1249,7 +1371,10 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const knownEvilCount = team.filter((player) => knownEvil.has(player.id)).length;
   const privateGood = privateLadyGoodIds(room, bot);
   const privateEvil = privateLadyEvilIds(room, bot);
-  const trustedGoodOnTeam = team.some((player) => privateGood.has(player.id));
+  const goodNudge = goodProtectionPoolIds(room, bot);
+  const trustedGoodOnTeam = team.some((player) => privateGood.has(player.id) || goodNudge.has(player.id));
+  const nudgeGoodCount = team.filter((player) => goodNudge.has(player.id)).length;
+  const strongNudgeTeam = nudgeGoodCount >= Math.max(1, Math.min(team.length, currentTeamSize(room) - 1));
   const condemnedOnTeam = team.some((player) => privateEvil.has(player.id));
   const critical = isCriticalMoment(room);
   const opening = isOpeningRound(room);
@@ -1265,7 +1390,7 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
     if (suspiciousCount > 1) {
       return chance(critical ? 0.62 : 0.76);
     }
-    return chance(selfOnTeam || trustedGoodOnTeam ? 0.96 : 0.88);
+    return chance(selfOnTeam || trustedGoodOnTeam || strongNudgeTeam ? 0.96 : 0.88);
   }
 
   if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
@@ -1325,13 +1450,37 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
       selfOnTeam || trustedGoodOnTeam ? (critical ? 0.48 : 0.62) : Math.max(critical ? 0.08 : 0.18, 0.44 - suspiciousCount * (critical ? 0.18 : 0.12))
     );
   }
-  return chance(selfOnTeam || trustedGoodOnTeam ? 0.9 : opening ? 0.82 : 0.74);
+  return chance(selfOnTeam || trustedGoodOnTeam || strongNudgeTeam ? 0.9 : opening ? 0.82 : 0.74);
 }
 
 function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = false): string {
   const teamNames = room.game.proposedTeam.map((id) => room.players.get(id)?.name || "未知").join("、");
+  const otherTeamNames =
+    room.game.proposedTeam
+      .filter((id) => id !== bot.id)
+      .map((id) => room.players.get(id)?.name || "未知")
+      .join("、") || teamNames;
   const knownEvil = knownEvilIds(room, bot);
   const condemned = privateLadyEvilIds(room, bot);
+  const trustedGood = privateLadyGoodIds(room, bot);
+  const protectedMerlinId = bot.role === "percival" ? deducedMerlinIdForPercival(room, bot) : null;
+  const exposedMorganaId = bot.role === "percival" ? exposedMorganaIdForPercival(room, bot) : null;
+  const protectedRejectionSuspects = bot.role === "percival" ? percivalProtectedRejectionSuspectIds(room, bot) : new Set<string>();
+  const trustedOnTeam = room.game.proposedTeam
+    .filter((id) => trustedGood.has(id) || id === protectedMerlinId)
+    .map((id) => room.players.get(id)?.name || "未知");
+  const protectedSuspiciousOnTeam = room.game.proposedTeam
+    .filter((id) => id !== bot.id && id !== protectedMerlinId && protectedRejectionSuspects.has(id))
+    .map((id) => room.players.get(id)?.name || "未知");
+  const directFlaggedOnTeam = room.game.proposedTeam
+    .filter((id) => condemned.has(id) || id === exposedMorganaId)
+    .map((id) => room.players.get(id)?.name || "未知");
+  const flaggedOnTeam =
+    directFlaggedOnTeam.length > 0 || bot.role !== "merlin"
+      ? (directFlaggedOnTeam.length > 0
+          ? directFlaggedOnTeam
+          : room.game.proposedTeam.filter((id) => knownEvil.has(id)).map((id) => room.players.get(id)?.name || "未知"))
+      : [];
   const hasKnownIssue = room.game.proposedTeam.some((id) => knownEvil.has(id) || condemned.has(id));
   const hasSuspiciousIssue = room.game.proposedTeam.some((id) => {
     const player = room.players.get(id);
@@ -1345,23 +1494,53 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
         `這組暫時說得過去，先通過看結果。`
       ]);
     }
+    if (trustedOnTeam.length > 0) {
+      const names = trustedOnTeam.join("、");
+      if (protectedSuspiciousOnTeam.length === 0) {
+        return pickLine([`我想保留 ${names} 這條線。`, `${names} 目前我願意放進隊伍。`, `這隊有我信得過的位置，可以跑。`]);
+      }
+      return pickLine([`有 ${names} 在，我先看這隊能不能洗乾淨。`, `${names} 這條線值得保留，但結果要記清楚。`]);
+    }
     if (hasKnownIssue) {
       return pickLine([`我先不把話說死，這隊跑完會有更多資訊。`, `這組有風險，但現在先看結果。`]);
     }
     return pickLine([`這隊目前看起來可以先跑。`, `我同意這組，資訊線比較乾淨。`, `先讓這隊執行，後面再對紀錄。`]);
   }
+  if (flaggedOnTeam.length > 0 && playerAllegiance(room, bot) === "good") {
+    const names = flaggedOnTeam.join("、");
+    return pickLine([`我不想讓 ${names} 進這輪。`, `${names} 這個位置我先避開。`, `這隊卡在 ${names}，我會反對。`]);
+  }
+  if (protectedSuspiciousOnTeam.length > 0 && playerAllegiance(room, bot) === "good") {
+    const names = protectedSuspiciousOnTeam.join("、");
+    return pickLine([
+      `我想沿著上一輪反對票看，先避開 ${names}。`,
+      `${names} 跟前面失敗局有交集，我先擋。`,
+      `這隊又碰到 ${names}，我不想放過。`
+    ]);
+  }
   if ((hasKnownIssue || hasSuspiciousIssue) && playerAllegiance(room, bot) === "good") {
     return pickLine([
-      `我反對這隊，${teamNames} 裡有我不放心的位置。`,
+      `我反對這隊，${otherTeamNames} 裡有我不放心的位置。`,
       `這隊我不想放過，裡面有需要避開的人。`,
       `我不喜歡這組的資訊組合，先反對。`,
       `這組目前風險偏高，我想換一隊。`
     ]);
   }
   if (playerAllegiance(room, bot) === "evil") {
+    const frameTarget = room.game.proposedTeam
+      .map((id) => room.players.get(id))
+      .find((player): player is PlayerInternal => Boolean(player && player.id !== bot.id && player.role && playerAllegiance(room, player) === "good"));
     return isCriticalMoment(room)
-      ? pickLine([`這隊在關鍵局風險太高，我想再換一組。`, `這回合我會保守一點，先反對。`, `這隊過了不好回頭，我先擋一下。`])
-      : pickLine([`我先反對，這隊資訊還不夠乾淨。`, `我想看隊長換另一種組合。`, `這組我暫時不買單。`]);
+      ? pickLine([
+          `這隊在關鍵局風險太高，我想再換一組。`,
+          `這回合我會保守一點，先反對。`,
+          frameTarget ? `${frameTarget.name} 那條線我還沒買單。` : `這隊過了不好回頭，我先擋一下。`
+        ])
+      : pickLine([
+          `我先反對，這隊資訊還不夠乾淨。`,
+          `我想看隊長換另一種組合。`,
+          frameTarget ? `${frameTarget.name} 的票型我想再觀察。` : `這組我暫時不買單。`
+        ]);
   }
   if (room.game.failedVoteCount >= 3) {
     return pickLine([`否決快到危險線，但這隊我還是不放心。`, `再否決有壓力，可是這組我覺得更危險。`]);
@@ -1372,7 +1551,37 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
 function botProposeTeamOpinion(room: RoomInternal, bot: PlayerInternal, teamIds: string[]): string {
   const teamNames = teamIds.map((id) => room.players.get(id)?.name || "未知").join("、");
   if (playerAllegiance(room, bot) === "evil") {
-    return pickLine([`我先派 ${teamNames}，讓這輪有資訊。`, `這組可以測一下場上的反應。`, `先用這隊推進，後面再看票型。`]);
+    const coverTarget = teamIds
+      .map((id) => room.players.get(id))
+      .find((player): player is PlayerInternal => Boolean(player && player.id !== bot.id && player.role && playerAllegiance(room, player) === "evil"));
+    return pickLine([
+      `我先派 ${teamNames}，讓這輪有資訊。`,
+      coverTarget ? `我想保留 ${coverTarget.name} 這條線，先跑。` : `這組可以測一下場上的反應。`,
+      `先用這隊推進，後面再看票型。`
+    ]);
+  }
+  if (bot.role === "percival") {
+    const protectedId = deducedMerlinIdForPercival(room, bot);
+    const exposedId = exposedMorganaIdForPercival(room, bot);
+    const protectedName = protectedId && teamIds.includes(protectedId) ? room.players.get(protectedId)?.name : null;
+    const exposedName = exposedId && teamIds.includes(exposedId) ? room.players.get(exposedId)?.name : null;
+    const suspectNames = teamIds
+      .filter((id) => id !== bot.id && id !== protectedId && percivalProtectedRejectionSuspectIds(room, bot).has(id))
+      .map((id) => room.players.get(id)?.name || "未知")
+      .join("、");
+    if (protectedName && !exposedName) {
+      if (suspectNames) {
+        return pickLine([`我保留 ${protectedName}，但 ${suspectNames} 這條要驗清楚。`, `這隊先保留 ${protectedName}，順便看 ${suspectNames}。`]);
+      }
+      return pickLine([`我想保留 ${protectedName} 這條線，先派這組。`, `${protectedName} 目前我會放進乾淨線。`, `這組有可用的線，先跑。`]);
+    }
+  }
+  const trustedNames = teamIds
+    .filter((id) => privateLadyGoodIds(room, bot).has(id))
+    .map((id) => room.players.get(id)?.name || "未知")
+    .join("、");
+  if (trustedNames) {
+    return pickLine([`我把 ${trustedNames} 留在隊伍裡，先看結果。`, `${trustedNames} 這條線目前比較穩。`, `這組有可用的乾淨線，先派。`]);
   }
   return pickLine([`我先派 ${teamNames}，這組目前比較穩。`, `這隊的紀錄相對乾淨，先試。`, `我想用這組確認任務結果。`]);
 }
@@ -1480,7 +1689,7 @@ function chooseBotAssassinationTarget(room: RoomInternal, bot: PlayerInternal): 
     return { player, score, index };
   });
   scored.sort((first, second) => second.score - first.score || first.index - second.index);
-  const poolSize = Math.min(scored.length, Math.max(3, scored.length - 1));
+  const poolSize = Math.min(scored.length, Math.max(2, scored.length - 1));
   return weightedAssassinationPick(scored.slice(0, poolSize)).player.id;
 }
 
@@ -1662,7 +1871,7 @@ async function requestBotAiDecision(
           {
             role: "system",
             content:
-              "你是阿瓦隆電腦玩家。只用已提供資訊，別自爆角色/陣營/AI。快速決策，只回短 JSON，message 16 字內。"
+              "你是阿瓦隆電腦玩家。只用已提供資訊，別自爆角色/陣營/AI。發言像公開推理，可暗示不可報答案。只回短 JSON，message 22 字內。"
           },
           {
             role: "user",
@@ -1713,7 +1922,7 @@ function buildBotAiPromptState(
       lady: "回 announcement: good/evil，可說謊。",
       assassination: "回 targetId。"
     }[task],
-    out: "JSON only: approve?, teamIds?, targetId?, excaliburHolderId?, announcement?, message(16字內)",
+    out: "JSON only: approve?, teamIds?, targetId?, excaliburHolderId?, announcement?, message(22字內)",
     self: {
       id: bot.id,
       name: bot.name,
@@ -1767,6 +1976,9 @@ function sanitizeBotSpeech(message: unknown): string | null {
     return null;
   }
   const cleaned = message
+    .replace(/梅林候選|梅林/g, "關鍵線")
+    .replace(/派西維爾|派西/g, "看線位")
+    .replace(/莫甘娜|刺客|莫德雷德|莫德|奧伯倫/g, "可疑位")
     .replace(/邪惡方|邪惡陣營|壞人方|好人方|亞瑟陣營|我是壞人|我是好人|我是AI|AI|API/gi, "這邊")
     .trim()
     .slice(0, 44);
@@ -1777,6 +1989,8 @@ function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerI
   const knownEvil = knownEvilIds(room, bot);
   const privateGood = privateLadyGoodIds(room, bot);
   const privateEvil = privateLadyEvilIds(room, bot);
+  const goodNudge = goodProtectionPoolIds(room, bot);
+  const protectedRejectionSuspects = bot.role === "percival" ? percivalProtectedRejectionSuspectIds(room, bot) : new Set<string>();
   const critical = isCriticalMoment(room);
   const opening = isOpeningRound(room);
 
@@ -1803,6 +2017,9 @@ function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerI
           score -= opening ? 0.6 : critical ? 4.2 : 2.6;
         } else {
           score += 1.4 - suspicion * (critical ? 1.3 : 0.75);
+          if (goodNudge.has(player.id)) {
+            score += critical ? 1.25 : 0.7;
+          }
           if (privateGood.has(player.id)) {
             score += critical ? 2.1 : 1.45;
           }
@@ -1815,7 +2032,13 @@ function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerI
         } else if ((exposedMorganaId && player.id === exposedMorganaId) || privateEvil.has(player.id)) {
           score -= critical ? 4.5 : 3.1;
         } else if (player.role === "merlin" || player.role === "morgana") {
-          score += critical ? 0.65 : 1.1;
+          score += (critical ? 0.65 : 1.1) + percivalMerlinSignalScore(room, bot, player) * 0.55;
+        }
+        if (protectedRejectionSuspects.has(player.id)) {
+          score -= critical ? 2.2 : 1.4;
+        }
+        if (goodNudge.has(player.id)) {
+          score += critical ? 1.45 : 0.85;
         }
         score += 1.1 - suspicion * (critical ? 1.2 : 0.7);
         if (privateGood.has(player.id)) {
@@ -1823,6 +2046,9 @@ function rankBotTeamCandidates(room: RoomInternal, bot: PlayerInternal): PlayerI
         }
       } else {
         score += 1 - suspicion * (critical ? 1.25 : 0.72);
+        if (goodNudge.has(player.id)) {
+          score += critical ? 1.25 : 0.75;
+        }
         if (privateGood.has(player.id)) {
           score += critical ? 2.0 : 1.5;
         }
@@ -1853,20 +2079,200 @@ function isOpeningRound(room: RoomInternal): boolean {
   return room.game.questIndex === 0 && room.game.quests.length === 0;
 }
 
+function goodProtectionPoolIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
+  const pool = new Set<string>();
+  if (!bot.role || playerAllegiance(room, bot) !== "good") {
+    return pool;
+  }
+
+  const limit = Math.max(1, currentTeamSize(room) - 1);
+  const add = (id: string | null | undefined) => {
+    if (id && id !== bot.id && pool.size < limit) {
+      pool.add(id);
+    }
+  };
+
+  privateLadyGoodIds(room, bot).forEach(add);
+  add(deducedMerlinIdForPercival(room, bot));
+
+  const knownBad = new Set([...knownEvilIds(room, bot), ...privateLadyEvilIds(room, bot)]);
+  const ranked = orderedPlayers(room)
+    .filter((player) => player.id !== bot.id && !knownBad.has(player.id))
+    .map((player, index) => ({
+      player,
+      index,
+      score: publicGoodLeanScore(room, bot, player)
+    }))
+    .sort((first, second) => second.score - first.score || first.index - second.index);
+
+  for (const item of ranked) {
+    if (pool.size >= limit) {
+      break;
+    }
+    if (item.score >= 0.35 || pool.size === 0) {
+      pool.add(item.player.id);
+    }
+  }
+
+  return pool;
+}
+
+function publicGoodLeanScore(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
+  let score = -botSuspicionScoreWithoutPercivalCandidateSignals(room, bot, player) * 0.42;
+
+  const approvedVotes = room.game.voteHistory.filter((vote) => vote.approved);
+  approvedVotes.forEach((vote, questOrder) => {
+    const quest = room.game.quests[questOrder];
+    if (!quest) {
+      return;
+    }
+    const onTeam = vote.team.includes(player.id);
+    if (quest.success && onTeam) {
+      score += 0.72;
+    }
+    if (!quest.success && vote.rejections.includes(player.id)) {
+      score += quest.failCount >= 2 ? 0.72 : 0.48;
+    }
+    if (!quest.success && onTeam && vote.approvals.includes(player.id)) {
+      score -= 0.55;
+    }
+  });
+
+  if (bot.role === "percival" && (player.role === "merlin" || player.role === "morgana")) {
+    score += percivalMerlinSignalScore(room, bot, player) * 0.65;
+  }
+  if (privateLadyGoodIds(room, bot).has(player.id)) {
+    score += 2.4;
+  }
+  if (privateLadyEvilIds(room, bot).has(player.id)) {
+    score -= 3.5;
+  }
+  return score;
+}
+
+function percivalCandidatePlayers(room: RoomInternal): PlayerInternal[] {
+  return orderedPlayers(room).filter((player) => player.role === "merlin" || player.role === "morgana");
+}
+
+function percivalCandidateScores(room: RoomInternal, bot: PlayerInternal): Array<{ player: PlayerInternal; score: number }> {
+  return percivalCandidatePlayers(room)
+    .map((player) => ({
+      player,
+      score: percivalMerlinSignalScore(room, bot, player)
+    }))
+    .sort((first, second) => second.score - first.score);
+}
+
+function percivalMerlinSignalScore(room: RoomInternal, bot: PlayerInternal, candidate: PlayerInternal): number {
+  if (bot.role !== "percival" || (candidate.role !== "merlin" && candidate.role !== "morgana")) {
+    return 0;
+  }
+
+  let score = 0;
+  const approvedVotes = room.game.voteHistory.filter((vote) => vote.approved);
+  approvedVotes.forEach((vote, questOrder) => {
+    const quest = room.game.quests[questOrder];
+    if (!quest) {
+      return;
+    }
+
+    const rejected = vote.rejections.includes(candidate.id);
+    const approved = vote.approvals.includes(candidate.id);
+    const onTeam = vote.team.includes(candidate.id);
+    const wasLeader = vote.leaderId === candidate.id;
+
+    if (!quest.success) {
+      if (rejected) {
+        score += quest.failCount >= 2 ? 1.3 : 1.05;
+      }
+      if (approved) {
+        score -= onTeam ? 1.05 : 0.65;
+      }
+      if (wasLeader) {
+        score -= 0.9;
+      }
+      if (onTeam) {
+        score -= 0.25;
+      }
+    } else {
+      if (approved) {
+        score += onTeam ? 0.42 : 0.2;
+      }
+      if (rejected) {
+        score -= 0.22;
+      }
+      if (wasLeader) {
+        score += 0.32;
+      }
+    }
+  });
+
+  for (const inspection of room.game.ladyInspections) {
+    if (inspection.targetId !== candidate.id) {
+      continue;
+    }
+    if (inspection.announcedAllegiance === "good") {
+      score += 0.28;
+    }
+    if (inspection.announcedAllegiance === "evil") {
+      score -= 0.42;
+    }
+  }
+
+  const privateRead = room.game.ladyResults[bot.id];
+  if (privateRead?.targetId === candidate.id) {
+    score += privateRead.allegiance === "good" ? 3.5 : -3.5;
+  }
+
+  score -= Math.min(2.4, botSuspicionScoreWithoutPercivalCandidateSignals(room, bot, candidate) * 0.34);
+  return score;
+}
+
+function percivalProtectedRejectionSuspectIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
+  const protectedId = deducedMerlinIdForPercival(room, bot);
+  const suspects = new Set<string>();
+  if (bot.role !== "percival" || !protectedId) {
+    return suspects;
+  }
+
+  const approvedVotes = room.game.voteHistory.filter((vote) => vote.approved);
+  approvedVotes.forEach((vote, questOrder) => {
+    const quest = room.game.quests[questOrder];
+    if (!quest || quest.success || !vote.rejections.includes(protectedId)) {
+      return;
+    }
+    for (const id of quest.team) {
+      if (id !== protectedId) {
+        suspects.add(id);
+      }
+    }
+  });
+  return suspects;
+}
+
 function deducedMerlinIdForPercival(room: RoomInternal, bot: PlayerInternal): string | null {
   if (bot.role !== "percival") {
     return null;
   }
 
-  const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
-  if (!exposedMorganaId) {
-    return null;
+  const ladyResult = room.game.ladyResults[bot.id];
+  const target = ladyResult ? room.players.get(ladyResult.targetId) : null;
+  if (ladyResult && target?.role === "merlin" && ladyResult.allegiance === "good") {
+    return target.id;
   }
 
-  const merlinCandidate = orderedPlayers(room).find(
-    (player) => (player.role === "merlin" || player.role === "morgana") && player.id !== exposedMorganaId
-  );
-  return merlinCandidate?.id || null;
+  const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+  const directCandidate = otherPercivalCandidateId(room, exposedMorganaId, "merlin");
+  if (directCandidate) {
+    return directCandidate;
+  }
+
+  const [best, second] = percivalCandidateScores(room, bot);
+  if (!best) {
+    return null;
+  }
+  const gap = best.score - (second?.score ?? 0);
+  return best.score >= 1.2 || gap >= 1.05 ? best.player.id : null;
 }
 
 function exposedMorganaIdForPercival(room: RoomInternal, bot: PlayerInternal): string | null {
@@ -1875,12 +2281,31 @@ function exposedMorganaIdForPercival(room: RoomInternal, bot: PlayerInternal): s
   }
 
   const ladyResult = room.game.ladyResults[bot.id];
-  if (!ladyResult || ladyResult.allegiance !== "evil") {
-    return null;
+  if (ladyResult) {
+    const target = room.players.get(ladyResult.targetId);
+    if (target?.role === "morgana" && ladyResult.allegiance === "evil") {
+      return target.id;
+    }
+    if (target?.role === "merlin" && ladyResult.allegiance === "good") {
+      return otherPercivalCandidateId(room, target.id, "morgana");
+    }
   }
 
-  const target = room.players.get(ladyResult.targetId);
-  return target?.role === "morgana" ? target.id : null;
+  const scored = percivalCandidateScores(room, bot);
+  const best = scored[0];
+  const worst = scored[scored.length - 1];
+  if (!best || !worst || best.player.id === worst.player.id) {
+    return null;
+  }
+  return best.score - worst.score >= 1.4 || worst.score <= -0.9 ? worst.player.id : null;
+}
+
+function otherPercivalCandidateId(room: RoomInternal, knownCandidateId: string | null, expectedRole: "merlin" | "morgana"): string | null {
+  if (!knownCandidateId) {
+    return null;
+  }
+  const candidate = orderedPlayers(room).find((player) => player.role === expectedRole && player.id !== knownCandidateId);
+  return candidate?.id || null;
 }
 
 function privateLadyGoodIds(room: RoomInternal, bot: PlayerInternal): Set<string> {
@@ -1912,16 +2337,7 @@ function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: Play
     return 0;
   }
 
-  let score = 0;
-  const privateGood = privateLadyGoodIds(room, bot);
-  const privateEvil = privateLadyEvilIds(room, bot);
-
-  if (privateGood.has(player.id)) {
-    score -= bot.role && playerAllegiance(room, bot) === "good" ? 2.2 : 0.5;
-  }
-  if (privateEvil.has(player.id)) {
-    score += bot.role && playerAllegiance(room, bot) === "good" ? 5.0 : 0.6;
-  }
+  let score = botSuspicionScoreWithoutPercivalCandidateSignals(room, bot, player);
 
   if (bot.role === "percival") {
     const protectedMerlinId = deducedMerlinIdForPercival(room, bot);
@@ -1932,6 +2348,25 @@ function botSuspicionScore(room: RoomInternal, bot: PlayerInternal, player: Play
     if (player.id === exposedMorganaId) {
       score += 5.2;
     }
+  }
+
+  return Math.max(0, score);
+}
+
+function botSuspicionScoreWithoutPercivalCandidateSignals(room: RoomInternal, bot: PlayerInternal, player: PlayerInternal): number {
+  if (bot.role && playerAllegiance(room, bot) === "good" && player.id === bot.id) {
+    return 0;
+  }
+
+  let score = 0;
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+
+  if (privateGood.has(player.id)) {
+    score -= bot.role && playerAllegiance(room, bot) === "good" ? 2.2 : 0.5;
+  }
+  if (privateEvil.has(player.id)) {
+    score += bot.role && playerAllegiance(room, bot) === "good" ? 5.0 : 0.6;
   }
 
   for (const quest of room.game.quests) {
