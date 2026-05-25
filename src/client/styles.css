@@ -1472,6 +1472,14 @@ select {
   border-left-color: rgba(76, 167, 165, 0.34);
 }
 
+.inline-excalibur-action {
+  border-left-color: rgba(213, 168, 59, 0.36);
+}
+
+.inline-final-action {
+  border-left-color: rgba(184, 74, 74, 0.42);
+}
+
 .inline-action-summary {
   display: grid;
   gap: 3px;

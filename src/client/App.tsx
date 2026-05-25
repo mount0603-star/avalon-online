@@ -1406,13 +1406,13 @@ function PhasePanel({
     return null;
   }
   if (room.game.phase === "excalibur") {
-    return <ExcaliburPanel room={room} />;
+    return null;
   }
   if (room.game.phase === "lady") {
     return null;
   }
   if (room.game.phase === "assassination") {
-    return <Assassination room={room} />;
+    return null;
   }
   return <Finished room={room} />;
 }
@@ -1867,7 +1867,9 @@ function InlineTurnAction({
   const isTeamBuilding = room.game.phase === "team-building";
   const isVoting = room.game.phase === "team-vote";
   const isMission = room.game.phase === "mission";
+  const isExcalibur = room.game.phase === "excalibur";
   const isLady = room.game.phase === "lady";
+  const isAssassination = room.game.phase === "assassination";
   const voted = room.game.teamVotesSubmitted.includes(youId);
   const onMission = room.game.proposedTeam.includes(youId);
   const missionSubmitted = room.game.missionVotesSubmitted.includes(youId);
@@ -1883,6 +1885,12 @@ function InlineTurnAction({
   }
   if (isLady) {
     return <InlineLadyAction room={room} />;
+  }
+  if (isExcalibur) {
+    return <InlineExcaliburAction room={room} />;
+  }
+  if (isAssassination) {
+    return <InlineAssassinationAction room={room} />;
   }
   if (!isVoting && !isMission) {
     return null;
@@ -1999,6 +2007,70 @@ function InlineTeamBuilderAction({
         </button>
       ) : (
         <span className="inline-action-waiting">等待隊長提交</span>
+      )}
+    </div>
+  );
+}
+
+function InlineExcaliburAction({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const isHolder = room.game.excaliburHolderId === youId;
+  const candidates = room.game.proposedTeam.filter((id) => id !== youId);
+
+  return (
+    <div className="inline-turn-action inline-excalibur-action">
+      <div className="inline-action-summary">
+        <strong>王者之劍</strong>
+        <span>持有者：{playerName(room, room.game.excaliburHolderId)}</span>
+        <small>{isHolder ? "選一名隊員更換任務卡，或不使用。" : "等待持有者決定。"}</small>
+      </div>
+      {isHolder ? (
+        <div className="inline-lady-candidates">
+          {candidates.map((id) => (
+            <button className="select-player" key={id} onClick={() => socket.emit("useExcalibur", id)}>
+              <Swords size={17} />
+              {playerName(room, id)}
+            </button>
+          ))}
+          <button className="secondary-button" onClick={() => socket.emit("useExcalibur", null)}>
+            不使用
+          </button>
+        </div>
+      ) : (
+        <span className="inline-action-waiting">等待 {playerName(room, room.game.excaliburHolderId)}</span>
+      )}
+    </div>
+  );
+}
+
+function InlineAssassinationAction({ room }: { room: RoomView }) {
+  const youId = room.you?.id || "";
+  const canVote = room.yourAllegiance === "evil";
+  const voted = room.game.assassinationVotesSubmitted.includes(youId);
+  const candidates = room.players.filter((player) => !room.publicEvilPlayerIds.includes(player.id));
+
+  return (
+    <div className="inline-turn-action inline-final-action">
+      <div className="inline-action-summary">
+        <strong>刺殺梅林</strong>
+        <span>邪惡陣營共同投票。</span>
+        <small>
+          已投 {room.game.assassinationVotesSubmitted.length}/{room.game.assassinationVoteCount}
+        </small>
+      </div>
+      {canVote && !voted ? (
+        <div className="inline-lady-candidates">
+          {candidates.map((player) => (
+            <button className="select-player" key={player.id} onClick={() => socket.emit("assassinate", player.id)}>
+              <Target size={17} />
+              {player.name}
+            </button>
+          ))}
+        </div>
+      ) : canVote ? (
+        <span className="inline-action-waiting">已投票，等待邪惡陣營共識。</span>
+      ) : (
+        <span className="inline-action-waiting">等待邪惡陣營刺殺。</span>
       )}
     </div>
   );
