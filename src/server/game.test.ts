@@ -427,6 +427,97 @@ test("good bot avoids random rejection on the final team vote", () => {
   assert.equal(room.game.teamVotes[botId], true);
 });
 
+test("server bots wait for enough human team votes before voting", async () => {
+  const { room, playerId: hostId } = createRoom("A");
+  const humanIds = ["B", "C", "D", "E"].map((name) => joinRoom(room.code, name).playerId);
+  startGame(room, hostId);
+  const botId = hostId;
+  room.players.get(botId)!.isBot = true;
+  room.game.phase = "team-vote";
+  room.game.proposedTeam = room.game.playerOrder.slice(0, 2);
+  room.game.teamVotes = {};
+
+  await runBotActionsForServer(room);
+  assert.equal(room.game.teamVotes[botId], undefined);
+
+  castTeamVote(room, humanIds[0], true);
+  castTeamVote(room, humanIds[1], false);
+  castTeamVote(room, humanIds[2], true);
+  await runBotActionsForServer(room);
+
+  assert.equal(typeof room.game.teamVotes[botId], "boolean");
+});
+
+test("percival bot can follow a deduced merlin team vote", async () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [percivalId, merlinId, morganaId, loyalId, assassinId] = room.game.playerOrder;
+  room.players.get(percivalId)!.isBot = true;
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.players.get(loyalId)!.role = "loyal";
+  room.players.get(assassinId)!.role = "assassin";
+  room.game.ladyResults[percivalId] = { targetId: morganaId, allegiance: "evil" };
+  room.game.phase = "team-vote";
+  room.game.leaderIndex = room.game.playerOrder.indexOf(loyalId);
+  room.game.proposedTeam = [percivalId, loyalId];
+  room.game.teamVotes = {
+    [merlinId]: false,
+    [loyalId]: true,
+    [assassinId]: true
+  };
+
+  const random = Math.random;
+  Math.random = () => 0.5;
+  try {
+    await runBotActionsForServer(room);
+  } finally {
+    Math.random = random;
+  }
+
+  assert.equal(room.game.teamVotes[percivalId], false);
+});
+
+test("valid API bot proposal is marked as API sourced", async () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  setBotAiSettings(room, hostId, {
+    enabled: true,
+    provider: "custom",
+    baseUrl: "https://example.test/v1",
+    apiKey: "sk-test",
+    model: "test-model"
+  });
+  startGame(room, hostId);
+  const leaderId = room.game.playerOrder[room.game.leaderIndex];
+  room.players.get(leaderId)!.isBot = true;
+  const teamSize = buildRoomView(room, leaderId).game.teamSize;
+  const teamIds = room.game.playerOrder.slice(0, teamSize);
+
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  globalThis.fetch = (async () => {
+    fetchCalled = true;
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ teamIds, message: "先用這隊看資訊" }) } }]
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }) as typeof fetch;
+
+  try {
+    await runBotActionsForServer(room);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchCalled, true);
+  assert.equal(room.game.botOpinions.some((opinion) => opinion.source === "api"), true);
+});
+
 test("stale API bot team vote is ignored if the bot already voted", async () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
@@ -442,7 +533,11 @@ test("stale API bot team vote is ignored if the bot already voted", async () => 
   room.players.get(botId)!.isBot = true;
   room.game.phase = "team-vote";
   room.game.proposedTeam = room.game.playerOrder.slice(0, 2);
-  room.game.teamVotes = {};
+  room.game.teamVotes = {
+    [room.game.playerOrder[1]]: true,
+    [room.game.playerOrder[2]]: false,
+    [room.game.playerOrder[3]]: true
+  };
 
   const originalFetch = globalThis.fetch;
   let markFetchStarted!: () => void;

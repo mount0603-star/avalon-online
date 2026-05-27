@@ -1274,7 +1274,9 @@ async function runOneBotActionForServer(room: RoomInternal): Promise<boolean> {
   }
 
   if (room.game.phase === "team-vote") {
-    const bot = Array.from(room.players.values()).find((player) => player.isBot && room.game.teamVotes[player.id] === undefined);
+    const bot = Array.from(room.players.values()).find(
+      (player) => player.isBot && room.game.teamVotes[player.id] === undefined && !shouldBotWaitForMoreTeamVotes(room, player)
+    );
     if (bot) {
       const proposedTeamKey = room.game.proposedTeam.join("|");
       const voteHistoryLength = room.game.voteHistory.length;
@@ -1390,6 +1392,93 @@ function chooseBotTeam(room: RoomInternal, bot: PlayerInternal): string[] {
   return team.slice(0, size);
 }
 
+function shouldBotWaitForMoreTeamVotes(room: RoomInternal, bot: PlayerInternal): boolean {
+  if (room.game.phase !== "team-vote" || room.game.teamVotes[bot.id] !== undefined) {
+    return false;
+  }
+
+  const submittedCount = Object.keys(room.game.teamVotes).length;
+  const halfTable = Math.ceil(room.players.size / 2);
+  if (submittedCount >= halfTable) {
+    return false;
+  }
+
+  const hasUnvotedHuman = Array.from(room.players.values()).some((player) => !player.isBot && room.game.teamVotes[player.id] === undefined);
+  return hasUnvotedHuman;
+}
+
+function submittedTeamVoteInfluence(room: RoomInternal, bot: PlayerInternal): { score: number; names: string[] } {
+  let score = 0;
+  const names: string[] = [];
+
+  for (const [voterId, approve] of Object.entries(room.game.teamVotes)) {
+    if (voterId === bot.id) {
+      continue;
+    }
+    const voter = room.players.get(voterId);
+    if (!voter) {
+      continue;
+    }
+
+    const weight = teamVoteInfluenceWeight(room, bot, voter);
+    if (weight === 0) {
+      continue;
+    }
+    score += approve ? weight : -weight;
+    if (Math.abs(weight) >= 0.75 && names.length < 2) {
+      names.push(voter.name);
+    }
+  }
+
+  return { score, names };
+}
+
+function teamVoteInfluenceWeight(room: RoomInternal, bot: PlayerInternal, voter: PlayerInternal): number {
+  if (!bot.role || !voter.role) {
+    return 0;
+  }
+
+  const knownEvil = knownEvilIds(room, bot);
+  const privateGood = privateLadyGoodIds(room, bot);
+  const privateEvil = privateLadyEvilIds(room, bot);
+
+  if (playerAllegiance(room, bot) === "evil") {
+    if (knownEvil.has(voter.id)) {
+      return 1.05;
+    }
+    return publicGoodLeanScore(room, bot, voter) >= 0.75 ? 0.32 : 0;
+  }
+
+  if (privateGood.has(voter.id)) {
+    return 1.45;
+  }
+  if (privateEvil.has(voter.id) || knownEvil.has(voter.id)) {
+    return -1.25;
+  }
+  if (bot.role === "percival") {
+    const protectedMerlinId = deducedMerlinIdForPercival(room, bot);
+    const exposedMorganaId = exposedMorganaIdForPercival(room, bot);
+    if (voter.id === protectedMerlinId) {
+      return 1.9;
+    }
+    if (voter.id === exposedMorganaId) {
+      return -1.45;
+    }
+    if (voter.role === "merlin" || voter.role === "morgana") {
+      return 0.65;
+    }
+  }
+
+  const publicLean = publicGoodLeanScore(room, bot, voter);
+  if (publicLean >= 0.9) {
+    return 0.72;
+  }
+  if (botSuspicionScore(room, bot, voter) >= 2.2) {
+    return -0.48;
+  }
+  return 0;
+}
+
 function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const team = room.game.proposedTeam.map((id) => room.players.get(id)).filter(Boolean) as PlayerInternal[];
   const teamIds = team.map((player) => player.id);
@@ -1408,6 +1497,7 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
   const opening = isOpeningRound(room);
   const proposedBySelf = currentLeaderId(room) === bot.id;
   const carryoverRisk = failedTeamCarryoverRisk(room, bot, teamIds);
+  const voteInfluence = submittedTeamVoteInfluence(room, bot);
 
   if (proposedBySelf) {
     if (bot.role && playerAllegiance(room, bot) === "evil") {
@@ -1420,6 +1510,14 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
       return chance(critical ? 0.62 : 0.76);
     }
     return chance(selfOnTeam || trustedGoodOnTeam || strongNudgeTeam ? 0.96 : 0.88);
+  }
+
+  if (voteInfluence.score <= -1.25 && (!bot.role || playerAllegiance(room, bot) === "good")) {
+    return chance(opening ? 0.34 : critical ? 0.1 : 0.2);
+  }
+
+  if (voteInfluence.score >= 1.25 && (!bot.role || playerAllegiance(room, bot) === "good")) {
+    return chance(critical ? 0.82 : 0.92);
   }
 
   if (room.game.failedVoteCount >= 4 && (!bot.role || playerAllegiance(room, bot) === "good")) {
@@ -1490,6 +1588,7 @@ function chooseBotTeamVote(room: RoomInternal, bot: PlayerInternal): boolean {
 function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = false): string {
   const teamNames = room.game.proposedTeam.map((id) => room.players.get(id)?.name || "未知").join("、");
   const carryoverRisk = failedTeamCarryoverRisk(room, bot, room.game.proposedTeam);
+  const voteInfluence = submittedTeamVoteInfluence(room, bot);
   const otherTeamNames =
     room.game.proposedTeam
       .filter((id) => id !== bot.id)
@@ -1545,7 +1644,13 @@ function botTeamVoteOpinion(room: RoomInternal, bot: PlayerInternal, approve = f
     if (carryoverRisk <= -0.35) {
       return pickLine([`這隊有把前面的失敗組合拆開，可以看。`, `這組有換掉前面比較髒的位置，先跑。`, `前面那隊有調整過，我先給過。`]);
     }
+    if (voteInfluence.score >= 1.25 && voteInfluence.names.length > 0) {
+      return pickLine([`前面 ${voteInfluence.names.join("、")} 的票我會參考，先過。`, `有我願意參考的票先站這邊。`, `前面幾票方向一致，我先同意。`]);
+    }
     return pickLine([`這隊目前看起來可以先跑。`, `我同意這組，資訊線比較乾淨。`, `先讓這隊執行，後面再對紀錄。`]);
+  }
+  if (voteInfluence.score <= -1.25 && playerAllegiance(room, bot) === "good") {
+    return pickLine([`我跟前面可信的反對票走，這隊先擋。`, `前面有人已經擋這隊，我先不放過。`, `這隊既然被關鍵票擋住，我先反對。`]);
   }
   if (carryoverRisk >= 1.25 && playerAllegiance(room, bot) === "good") {
     return pickLine([`上一隊失敗，這隊改動不夠，我先擋。`, `這組跟前面失敗隊重疊太多，我反對。`, `前面的問題還沒拆開，這隊我不放。`]);
