@@ -1355,6 +1355,13 @@ function BotAiSettings({ room }: { room: RoomView }) {
   const [baseUrl, setBaseUrl] = useState(room.botAiSetting.baseUrl);
   const [model, setModel] = useState(room.botAiSetting.model);
   const [apiKey, setApiKey] = useState("");
+  const hasUnsavedChanges =
+    enabled !== room.botAiSetting.enabled ||
+    provider !== room.botAiSetting.provider ||
+    baseUrl !== room.botAiSetting.baseUrl ||
+    model !== room.botAiSetting.model ||
+    apiKey.trim().length > 0;
+  const statusLabel = hasUnsavedChanges ? "尚未套用" : room.botAiSetting.enabled ? "已開啟" : "規則 AI";
 
   useEffect(() => {
     setEnabled(room.botAiSetting.enabled);
@@ -1392,7 +1399,7 @@ function BotAiSettings({ room }: { room: RoomView }) {
           <Bot size={17} />
           API 電腦
         </span>
-        <b>{room.botAiSetting.enabled ? "已開啟" : "規則 AI"}</b>
+        <b>{statusLabel}</b>
       </summary>
       <div className="bot-ai-fields">
         <label className="toggle-row">
@@ -1430,13 +1437,15 @@ function BotAiSettings({ room }: { room: RoomView }) {
           />
         </label>
         <p className="bot-ai-note">
-          {room.botAiSetting.apiKeyConfigured
+          {hasUnsavedChanges
+            ? "目前只是表單內容，按下套用後才會存到這個房間的伺服器記憶體。"
+            : room.botAiSetting.apiKeyConfigured
             ? "Key 已存在伺服器記憶體；電腦意見旁會標示 API 或規則，API 失敗會退回規則 AI。"
             : "未填 Key 時會維持本機規則 AI。"}
         </p>
-        <button className="secondary-button full-button" type="button" onClick={saveSettings}>
+        <button className={`${hasUnsavedChanges ? "primary-button" : "secondary-button"} full-button`} type="button" onClick={saveSettings}>
           <Check size={17} />
-          套用電腦設定
+          {hasUnsavedChanges ? "套用未儲存設定" : "套用電腦設定"}
         </button>
       </div>
     </details>
