@@ -111,6 +111,7 @@ export type GamePublicState = {
   winReason: string | null;
   assassinId: string | null;
   assassinTargetId: string | null;
+  assassinationVotes: Record<string, string>;
   assassinationVotesSubmitted: string[];
   assassinationVoteCount: number;
   excaliburEnabled: boolean;
@@ -203,6 +204,7 @@ export type ClientToServerEvents = {
   joinRoom: (payload: JoinRoomPayload, ack: (payload: RoomJoinedPayload | { error: string }) => void) => void;
   addBot: () => void;
   removeBot: (playerId: string) => void;
+  kickPlayer: (playerId: string) => void;
   setLadyEnabled: (enabled: boolean) => void;
   setLadyHolderMode: (mode: LadyHolderMode) => void;
   setLancelotEnabled: (enabled: boolean) => void;

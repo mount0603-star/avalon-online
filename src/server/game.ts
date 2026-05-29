@@ -95,7 +95,7 @@ const DEFAULT_BOT_AI_CONFIG: BotAiInternalConfig = {
   apiKey: "",
   apiKeyConfigured: false
 };
-const BOT_AI_TIMEOUT_MS = 3500;
+const BOT_AI_TIMEOUT_MS = 2200;
 const BOT_NAME_PREFIX = "電腦";
 
 export function emptyGame(): GameInternal {
@@ -305,6 +305,33 @@ export function removeBot(room: RoomInternal, hostId: string, botId: string): vo
   renumberBots(room);
 }
 
+export function kickPlayer(room: RoomInternal, hostId: string, targetId: string): void {
+  assertHost(room, hostId);
+  if (hostId === targetId) {
+    throw new Error("房主不能踢出自己。");
+  }
+  const target = requirePlayer(room, targetId);
+
+  if (target.isBot) {
+    if (room.game.phase !== "lobby" && room.game.phase !== "finished") {
+      throw new Error("遊戲進行中不能移除電腦玩家。");
+    }
+    room.players.delete(targetId);
+    renumberBots(room);
+    return;
+  }
+
+  if (room.game.phase === "lobby" || room.game.phase === "finished") {
+    room.players.delete(targetId);
+    return;
+  }
+
+  convertPlayerToBot(room, target);
+  if (room.hostId === targetId) {
+    promoteHost(room);
+  }
+}
+
 export function setLadyEnabled(room: RoomInternal, hostId: string, enabled: boolean): void {
   assertHost(room, hostId);
   if (room.game.phase !== "lobby") {
@@ -396,14 +423,7 @@ export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteR
     return { shouldDeleteRoom: false };
   }
 
-  player.socketId = null;
-  player.connected = true;
-  player.isBot = true;
-  player.isHost = false;
-
-  if (!hasHumanPlayers(room)) {
-    return { shouldDeleteRoom: true };
-  }
+  convertPlayerToBot(room, player);
   if (room.hostId === playerId) {
     promoteHost(room);
   }
@@ -416,6 +436,7 @@ export function attachSocket(room: RoomInternal, playerId: string, socketId: str
   player.socketId = socketId;
   player.connected = true;
   player.isBot = false;
+  player.isHost = room.hostId === playerId;
 }
 
 export function touchRoom(room: RoomInternal, now = Date.now()): void {
@@ -431,7 +452,14 @@ export function detachSocket(socketId: string): RoomInternal | null {
     for (const player of room.players.values()) {
       if (player.socketId === socketId) {
         player.socketId = null;
-        player.connected = false;
+        if (room.game.phase === "lobby" || room.game.phase === "finished") {
+          player.connected = false;
+        } else {
+          convertPlayerToBot(room, player);
+          if (room.hostId === player.id) {
+            promoteHost(room);
+          }
+        }
         return room;
       }
     }
@@ -827,6 +855,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
   const revealedRoles = rolesAreRevealed
     ? Object.fromEntries(Array.from(room.players.values()).map((player) => [player.id, player.role!]))
     : null;
+  const canSeeAssassinationVotes = rolesAreRevealed || (game.phase === "assassination" && Boolean(viewer?.role) && playerAllegiance(room, viewer!) === "evil");
 
   return {
     roomCode: room.code,
@@ -857,6 +886,7 @@ export function buildRoomView(room: RoomInternal, viewerId: string): RoomView {
       winReason: game.winReason,
       assassinId: rolesAreRevealed ? assassin?.id || null : null,
       assassinTargetId: game.assassinTargetId,
+      assassinationVotes: canSeeAssassinationVotes ? { ...game.assassinationVotes } : {},
       assassinationVotesSubmitted: Object.keys(game.assassinationVotes),
       assassinationVoteCount: assassinationVoters(room).length,
       excaliburEnabled: game.excaliburEnabled,
@@ -885,6 +915,10 @@ export function buildAdminRoomView(room: RoomInternal): RoomView {
   const view = buildRoomView(room, "__admin__");
   return {
     ...view,
+    game: {
+      ...view.game,
+      assassinationVotes: { ...room.game.assassinationVotes }
+    },
     you: null,
     yourRole: null,
     yourAllegiance: null,
@@ -2856,9 +2890,20 @@ function hasHumanPlayers(room: RoomInternal): boolean {
   return Array.from(room.players.values()).some((player) => !player.isBot);
 }
 
+function convertPlayerToBot(room: RoomInternal, player: PlayerInternal): void {
+  player.socketId = null;
+  player.connected = true;
+  player.isBot = true;
+  player.isHost = false;
+  renumberBots(room);
+}
+
 function promoteHost(room: RoomInternal): void {
   const nextHost = Array.from(room.players.values()).find((player) => !player.isBot);
   if (!nextHost) {
+    for (const player of room.players.values()) {
+      player.isHost = player.id === room.hostId;
+    }
     return;
   }
 

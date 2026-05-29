@@ -1217,6 +1217,12 @@ select {
   color: #fff4ef;
 }
 
+.kick-player-button {
+  border-color: rgba(255, 196, 112, 0.3);
+  background: rgba(62, 44, 18, 0.72);
+  color: #f0d99c;
+}
+
 .mission-board {
   position: relative;
   min-height: 340px;
@@ -2306,6 +2312,39 @@ select {
 
 .final-panel {
   border-color: rgba(213, 168, 59, 0.45);
+}
+
+.assassination-vote-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.assassination-vote-status span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid rgba(213, 168, 59, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.assassination-vote-status b {
+  color: var(--gold);
+}
+
+.assassination-vote-status strong {
+  color: #9be4d9;
+}
+
+.assassination-vote-status small {
+  color: var(--muted);
 }
 
 .lake-panel {

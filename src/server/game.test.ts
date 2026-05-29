@@ -17,6 +17,8 @@ import {
   useExcalibur,
   assassinate,
   leaveRoom,
+  detachSocket,
+  kickPlayer,
   resetRoom,
   setLadyEnabled,
   setLadyHolderMode,
@@ -648,6 +650,25 @@ test("evil team votes together for the final merlin assassination", () => {
   assert.equal(room.game.assassinTargetId, merlinId);
 });
 
+test("evil players can see assassination vote targets before reveal", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  const [merlinId, percivalId, loyalId, assassinId, morganaId] = room.game.playerOrder;
+  room.players.get(merlinId)!.role = "merlin";
+  room.players.get(percivalId)!.role = "percival";
+  room.players.get(loyalId)!.role = "loyal";
+  room.players.get(assassinId)!.role = "assassin";
+  room.players.get(morganaId)!.role = "morgana";
+  room.game.phase = "assassination";
+  room.game.assassinationVotes = {};
+
+  assassinate(room, assassinId, percivalId);
+
+  assert.equal(buildRoomView(room, morganaId).game.assassinationVotes[assassinId], percivalId);
+  assert.equal(buildRoomView(room, merlinId).game.assassinationVotes[assassinId], undefined);
+});
+
 test("assassination reveals evil players first but hides full roles until finished", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
@@ -714,6 +735,31 @@ test("leaving during a game lets a bot take over and promotes a human host", () 
   assert.equal(room.players.get(hostId)?.isBot, true);
   assert.equal(room.hostId, nextHostId);
   assert.equal(room.players.get(nextHostId)?.isHost, true);
+});
+
+test("disconnect during a game lets a bot take over", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+  room.players.get(hostId)!.socketId = "socket-a";
+
+  const affectedRoom = detachSocket("socket-a");
+
+  assert.equal(affectedRoom, room);
+  assert.equal(room.players.get(hostId)?.isBot, true);
+  assert.equal(room.players.get(hostId)?.connected, true);
+});
+
+test("host can kick a player during a game and a bot takes over", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  const { playerId: targetId } = joinRoom(room.code, "B");
+  ["C", "D", "E"].forEach((name) => joinRoom(room.code, name));
+  startGame(room, hostId);
+
+  kickPlayer(room, hostId, targetId);
+
+  assert.equal(room.players.has(targetId), true);
+  assert.equal(room.players.get(targetId)?.isBot, true);
 });
 
 test("same name can rejoin a bot takeover and finished-room bots can be removed", () => {

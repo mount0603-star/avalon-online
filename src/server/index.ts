@@ -16,6 +16,7 @@ import {
   IDLE_TIMEOUT_MS,
   isRoomIdleExpired,
   joinRoom,
+  kickPlayer,
   leaveRoom,
   proposeTeam,
   removeBot,
@@ -171,6 +172,38 @@ io.on("connection", (socket) => {
   socket.on("startGame", () => runAction(socket, (room, playerId) => startGame(room, playerId)));
   socket.on("addBot", () => runAction(socket, (room, playerId) => addBot(room, playerId)));
   socket.on("removeBot", (botId) => runAction(socket, (room, playerId) => removeBot(room, playerId, botId)));
+  socket.on("kickPlayer", (targetId) => {
+    const { roomCode, playerId } = socket.data;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room || !playerId) {
+      socket.emit("roomError", "你還沒有加入房間。");
+      return;
+    }
+
+    const targetSocketId = typeof targetId === "string" ? room.players.get(targetId)?.socketId || null : null;
+    try {
+      kickPlayer(room, playerId, targetId);
+      if (targetSocketId) {
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        targetSocket?.emit("roomClosed", "你已被房主移出房間。");
+        targetSocket?.leave(room.code);
+        if (targetSocket) {
+          targetSocket.data.roomCode = undefined;
+          targetSocket.data.playerId = undefined;
+        }
+      }
+      touchRoom(room);
+      emitRoom(room.code);
+      emitLobbyRooms();
+      emitAdminSnapshot();
+      recordAdminLog("房主移出玩家", room.code, "warning");
+      if (hasConnectedHumanPlayers(room)) {
+        void runBotsAndEmit(room);
+      }
+    } catch (error) {
+      socket.emit("roomError", getErrorMessage(error));
+    }
+  });
   socket.on("setLadyEnabled", (enabled) => runAction(socket, (room, playerId) => setLadyEnabled(room, playerId, enabled)));
   socket.on("setLadyHolderMode", (mode) => runAction(socket, (room, playerId) => setLadyHolderMode(room, playerId, mode)));
   socket.on("setLancelotEnabled", (enabled) => runAction(socket, (room, playerId) => setLancelotEnabled(room, playerId, enabled)));
@@ -243,7 +276,9 @@ io.on("connection", (socket) => {
       touchRoom(room);
       emitRoom(room.code);
       emitLobbyRooms();
-      void runBotsAndEmit(room);
+      if (hasConnectedHumanPlayers(room)) {
+        void runBotsAndEmit(room);
+      }
     } catch (error) {
       socket.emit("roomError", getErrorMessage(error));
     }
@@ -254,9 +289,14 @@ io.on("connection", (socket) => {
     clearAdminSpectatingRoom(socket);
     const room = detachSocket(socket.id);
     if (room) {
+      touchRoom(room);
       emitRoom(room.code);
+      emitLobbyRooms();
       emitAdminRoom(room.code);
       emitAdminSnapshot();
+      if (hasConnectedHumanPlayers(room)) {
+        void runBotsAndEmit(room);
+      }
     }
   });
 });
@@ -468,6 +508,10 @@ function buildLobbySummaries(): LobbyRoomSummary[] {
       updatedAt: room.lastActivityAt
     }))
     .sort((first, second) => second.updatedAt - first.updatedAt);
+}
+
+function hasConnectedHumanPlayers(room: NonNullable<ReturnType<typeof rooms.get>>): boolean {
+  return Array.from(room.players.values()).some((player) => !player.isBot && Boolean(player.socketId));
 }
 
 function buildAdminSnapshot(): AdminSnapshot {

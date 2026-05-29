@@ -945,6 +945,12 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
     room.game.phase === "lady" &&
     room.you?.id === room.game.ladyHolderId &&
     !room.ladyPendingResult;
+  const youId = room.you?.id || "";
+  const canAssassinateFromCards =
+    room.game.phase === "assassination" &&
+    room.yourAllegiance === "evil" &&
+    Boolean(youId) &&
+    !room.game.assassinationVotesSubmitted.includes(youId);
   const excaliburCandidates = teamDraft.filter((id) => id !== room.game.leaderId);
 
   function markLocalTeamDraftChange() {
@@ -1028,6 +1034,13 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
     socket.emit("useLadyOfLake", playerId);
   }
 
+  function chooseAssassinationTarget(playerId: string) {
+    if (!canAssassinateFromCards || room.publicEvilPlayerIds.includes(playerId)) {
+      return;
+    }
+    socket.emit("assassinate", playerId);
+  }
+
   useEffect(() => {
     if (!isTeamDrafting) {
       return;
@@ -1086,6 +1099,7 @@ function GameRoom({ room, error, onLeave, adminMode = false }: { room: RoomView;
             teamDraft={teamDraft}
             onToggleTeamDraft={isTeamDrafting ? toggleTeamDraft : undefined}
             onUseLady={isLadyTargeting ? chooseLadyTarget : undefined}
+            onAssassinate={canAssassinateFromCards ? chooseAssassinationTarget : undefined}
           />
           <HostControls room={room} />
         </aside>
@@ -1149,15 +1163,18 @@ function PlayerList({
   room,
   teamDraft,
   onToggleTeamDraft,
-  onUseLady
+  onUseLady,
+  onAssassinate
 }: {
   room: RoomView;
   teamDraft?: string[];
   onToggleTeamDraft?: (playerId: string) => void;
   onUseLady?: (playerId: string) => void;
+  onAssassinate?: (playerId: string) => void;
 }) {
   const leaderId = room.game.leaderId;
   const canRemoveBots = room.you?.isHost && (room.game.phase === "lobby" || room.game.phase === "finished");
+  const canKickPlayers = room.you?.isHost;
   const displayedPlayers = orderedRoomPlayers(room);
   return (
     <div className="panel-block">
@@ -1179,7 +1196,8 @@ function PlayerList({
           const orderIndex = seatOrderIndex(room, player.id);
           const isLadyCandidate =
             Boolean(onUseLady) && player.id !== room.you?.id && !room.game.ladyUsedPlayerIds.includes(player.id);
-          const isSelectable = Boolean(onToggleTeamDraft) || isLadyCandidate;
+          const isAssassinationCandidate = Boolean(onAssassinate) && !room.publicEvilPlayerIds.includes(player.id);
+          const isSelectable = Boolean(onToggleTeamDraft) || isLadyCandidate || isAssassinationCandidate;
           const cardClass = playerSeatClass(room, player, isDraftMember, isSelectable);
           const cardStyle = visibleRole ? roleCardStyle(visibleRole, roleVariantIndexForPlayer(room, player.id, visibleRole)) : undefined;
           const pendingLabel = isPendingTeamVote ? "尚未表決" : isPendingMissionVote ? "尚未送出任務" : null;
@@ -1187,6 +1205,8 @@ function PlayerList({
             ? "點卡片選入或移出任務隊伍"
             : isLadyCandidate
               ? "點卡片使用湖中女神"
+              : isAssassinationCandidate
+                ? "點卡片投刺殺目標"
               : undefined;
           const activateCard = () => {
             if (onToggleTeamDraft) {
@@ -1195,6 +1215,10 @@ function PlayerList({
             }
             if (isLadyCandidate) {
               onUseLady?.(player.id);
+              return;
+            }
+            if (isAssassinationCandidate) {
+              onAssassinate?.(player.id);
             }
           };
           return (
@@ -1269,6 +1293,20 @@ function PlayerList({
                   }}
                 >
                   <Trash2 size={14} />
+                </button>
+              ) : null}
+              {canKickPlayers && !player.isBot && player.id !== room.you?.id ? (
+                <button
+                  className="mini-icon-button kick-player-button"
+                  type="button"
+                  title={`移出 ${player.name}`}
+                  aria-label={`移出 ${player.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    socket.emit("kickPlayer", player.id);
+                  }}
+                >
+                  <LogOut size={14} />
                 </button>
               ) : null}
             </div>
@@ -1914,6 +1952,7 @@ function Assassination({ room }: { room: RoomView }) {
         亞瑟陣營完成三次任務，邪惡陣營共同投票猜梅林。
         已投 {room.game.assassinationVotesSubmitted.length}/{room.game.assassinationVoteCount}
       </p>
+      <AssassinationVoteStatus room={room} />
       {canVote && !voted ? (
         <div className="select-grid">
           {room.players
@@ -1930,6 +1969,25 @@ function Assassination({ room }: { room: RoomView }) {
       ) : (
         <p className="waiting-line">等待邪惡陣營做最後刺殺。</p>
       )}
+    </div>
+  );
+}
+
+function AssassinationVoteStatus({ room }: { room: RoomView }) {
+  const votes = Object.entries(room.game.assassinationVotes);
+  if (votes.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="assassination-vote-status">
+      {votes.map(([voterId, targetId]) => (
+        <span key={voterId}>
+          <b>{playerName(room, voterId)}</b>
+          <small>投給</small>
+          <strong>{playerName(room, targetId)}</strong>
+        </span>
+      ))}
     </div>
   );
 }
@@ -2356,6 +2414,7 @@ function InlineAssassinationAction({ room }: { room: RoomView }) {
           已投 {room.game.assassinationVotesSubmitted.length}/{room.game.assassinationVoteCount}
         </small>
       </div>
+      <AssassinationVoteStatus room={room} />
       {canVote && !voted ? (
         <div className="inline-lady-candidates">
           {candidates.map((player) => (
