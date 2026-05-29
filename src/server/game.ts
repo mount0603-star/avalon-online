@@ -424,6 +424,9 @@ export function leaveRoom(room: RoomInternal, playerId: string): { shouldDeleteR
   }
 
   convertPlayerToBot(room, player);
+  if (!hasHumanPlayers(room)) {
+    return { shouldDeleteRoom: true };
+  }
   if (room.hostId === playerId) {
     promoteHost(room);
   }

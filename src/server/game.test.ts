@@ -737,6 +737,18 @@ test("leaving during a game lets a bot take over and promotes a human host", () 
   assert.equal(room.players.get(nextHostId)?.isHost, true);
 });
 
+test("leaving as the last human during a game closes the room", () => {
+  const { room, playerId: hostId } = createRoom("A");
+  for (let index = 0; index < 4; index += 1) {
+    addBot(room, hostId);
+  }
+  startGame(room, hostId);
+
+  const result = leaveRoom(room, hostId);
+
+  assert.equal(result.shouldDeleteRoom, true);
+});
+
 test("disconnect during a game lets a bot take over", () => {
   const { room, playerId: hostId } = createRoom("A");
   ["B", "C", "D", "E"].forEach((name) => joinRoom(room.code, name));
